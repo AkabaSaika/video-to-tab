@@ -1,5 +1,6 @@
 import shutil
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +39,55 @@ def test_full_flow(tmp_path, synth_video):
     assert r.status_code == 200, r.text
     pdf = client.get(r.json()["url"])
     assert pdf.content.startswith(b"%PDF")
+
+
+def test_region_rejects_invalid_params(tmp_path, synth_video):
+    client = TestClient(create_app(tmp_path))
+    with synth_video.path.open("rb") as f:
+        r = client.post("/api/jobs", files={"file": ("x.avi", f, "video/x-msvideo")})
+    job = wait_for(client, r.json()["id"], "ready_for_region")
+    base = job["region"]["roi"]
+
+    r = client.put(f"/api/jobs/{job['id']}/region", json={**base, "fps": 0})
+    assert r.status_code == 422
+    assert isinstance(r.json()["detail"], str)
+    assert r.json()["detail"].startswith("参数不合法")
+
+    r = client.put(f"/api/jobs/{job['id']}/region", json={**base, "fps": -1})
+    assert r.status_code == 422
+
+
+def test_run_analysis_uses_fresh_file_names_and_cleans_up(tmp_path, synth_video):
+    client = TestClient(create_app(tmp_path))
+    with synth_video.path.open("rb") as f:
+        r = client.post("/api/jobs", files={"file": ("x.avi", f, "video/x-msvideo")})
+    job = wait_for(client, r.json()["id"], "ready_for_region")
+    roi = job["region"]["roi"]
+    job_dir = Path(tmp_path) / job["id"]
+
+    r = client.put(f"/api/jobs/{job['id']}/region", json=roi)
+    assert r.status_code == 200, r.text
+    job = wait_for(client, job["id"], "ready_for_review")
+    first_files = [p["file"] for p in job["pages"]]
+    assert first_files
+    for f in first_files:
+        assert (job_dir / f).exists()
+
+    r = client.put(f"/api/jobs/{job['id']}/region", json=roi)
+    assert r.status_code == 200, r.text
+    job = wait_for(client, job["id"], "ready_for_review")
+    second_files = [p["file"] for p in job["pages"]]
+    assert second_files
+    assert set(first_files).isdisjoint(second_files)
+
+    for f in first_files:
+        assert not (job_dir / f).exists()
+    for f in second_files:
+        assert (job_dir / f).exists()
+
+    order = [p["id"] for p in job["pages"]]
+    r = client.post(f"/api/jobs/{job['id']}/export", json={"order": order, "fmt": "png"})
+    assert r.status_code == 200, r.text
 
 
 def test_rejects_bad_input(tmp_path):

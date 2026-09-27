@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 import cv2
@@ -56,9 +57,14 @@ def run_analysis(store: JobStore, job: Job, roi: Roi, params: AnalyzeParams) -> 
     )
     pages_dir = job.dir / "pages"
     pages_dir.mkdir(exist_ok=True)
+    for old in job.pages:
+        old_path = (job.dir / old["file"]).resolve()
+        if old_path.is_relative_to(pages_dir.resolve()) and old_path.is_file():
+            old_path.unlink()
+    run = uuid.uuid4().hex[:8]
     meta = []
     for i, page in enumerate(pages):
-        name = f"pages/{i:03d}.png"
+        name = f"pages/{run}_{i:03d}.png"
         cv2.imwrite(str(job.dir / name), page.image)
         meta.append(
             {

@@ -48,6 +48,8 @@ def sample_frames(
     path: Path, fps: float = 5.0, roi: Roi | None = None
 ) -> Iterator[tuple[float, np.ndarray]]:
     """Yield (t_seconds, BGR frame) roughly every 1/fps seconds, t relative to first frame."""
+    if fps <= 0:
+        raise ValueError("采样帧率必须大于 0")
     step = 1.0 / fps
     with _open(path) as container:
         stream = container.streams.video[0]

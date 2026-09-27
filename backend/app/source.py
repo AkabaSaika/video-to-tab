@@ -5,6 +5,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
+from urllib.parse import urlsplit
 
 import yt_dlp
 
@@ -48,8 +49,8 @@ def normalize_url(text: str) -> str:
         return f"https://www.bilibili.com/video/{m.group(1)}"
     if not re.match(r"^https?://", text):
         text = "https://" + text
-    host = re.sub(r"^https?://", "", text).split("/")[0].split(":")[0].lower()
-    if not any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS):
+    host = (urlsplit(text).hostname or "").lower()
+    if not host or not any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS):
         raise SourceError("只支持 bilibili / YouTube 链接或 BV 号")
     return text
 

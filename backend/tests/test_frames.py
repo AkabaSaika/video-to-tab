@@ -38,3 +38,8 @@ def test_decode_error_for_non_video(tmp_path):
     bad.write_bytes(b"not a video")
     with pytest.raises(DecodeError):
         probe(bad)
+
+
+def test_sample_frames_rejects_non_positive_fps(synth_video):
+    with pytest.raises(ValueError, match="采样帧率必须大于 0"):
+        list(sample_frames(synth_video.path, fps=0))

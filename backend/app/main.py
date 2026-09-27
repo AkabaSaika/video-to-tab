@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Literal
 
 import cv2
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import workflow
 from app.frames import frame_at
@@ -26,13 +27,13 @@ def safe_path(root: Path, name: str) -> Path | None:
 
 
 class RegionIn(BaseModel):
-    x: int
-    y: int
-    w: int
-    h: int
-    fps: float = 5.0
-    diff_threshold: float = 0.15
-    min_duration: float = 0.8
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
+    fps: float = Field(default=5.0, gt=0, le=60)
+    diff_threshold: float = Field(default=0.15, gt=0, lt=1)
+    min_duration: float = Field(default=0.8, ge=0)
 
 
 class ExportIn(BaseModel):
@@ -45,6 +46,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     store = JobStore(data_dir)
     app = FastAPI(title="video-to-tab")
     app.state.store = store
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        detail = "参数不合法：" + "; ".join(
+            f"{'.'.join(str(p) for p in e['loc'][1:])} {e['msg']}" for e in exc.errors()
+        )
+        return JSONResponse(status_code=422, content={"detail": detail})
 
     def get_job(job_id: str) -> Job:
         job = store.get(job_id)

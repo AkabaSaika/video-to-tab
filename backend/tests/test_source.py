@@ -26,7 +26,16 @@ def test_normalize_url_accepts(text, expected):
     assert normalize_url(text) == expected
 
 
-@pytest.mark.parametrize("text", ["https://example.com/v", "https://notyoutube.com/x", "hello"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://example.com/v",
+        "https://notyoutube.com/x",
+        "hello",
+        "https://evil.example#.youtube.com/x",
+        "https://evil.example?.youtube.com",
+    ],
+)
 def test_normalize_url_rejects(text):
     with pytest.raises(SourceError):
         normalize_url(text)
