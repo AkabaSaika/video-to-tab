@@ -27,12 +27,13 @@ def _gray(img: np.ndarray) -> np.ndarray:
 
 
 def ink_mask(img: np.ndarray) -> np.ndarray:
-    """Ink pixels without the staff lines: those match at every shift and would make
-    any two pages of the same layout look like an overlap."""
+    """Ink pixels without staff lines and bar lines. Staff lines match at every shift;
+    bar lines match at every multiple of an even measure width. Either would make any
+    two pages of the same layout look like an overlap."""
     ink = (_gray(img) < INK_LEVEL).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (41, 1))
-    lines = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
-    return (ink & (1 - lines)).astype(bool)
+    rows = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (41, 1)))
+    cols = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 41)))
+    return (ink & (1 - rows) & (1 - cols)).astype(bool)
 
 
 def overlap_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, float]:

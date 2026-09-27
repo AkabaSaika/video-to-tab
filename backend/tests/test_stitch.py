@@ -1,3 +1,5 @@
+import pytest
+
 from app.models import Page, Roi
 from app.pipeline import analyze
 from app.stitch import (
@@ -15,6 +17,7 @@ from tests.synth import (
     SCROLL_STEP,
     render_panel,
     render_scroll_strip,
+    render_tab_page,
     scroll_bar_xs,
     scroll_pages,
 )
@@ -45,6 +48,15 @@ def test_page_switch_panels_do_not_overlap():
     for a, b in zip(panels, panels[1:], strict=False):
         assert overlap_shift(a, b)[1] < OVERLAP_THRESHOLD
     assert overlap_shift(panels[0], panels[0][:, :300])[1] == 0.0  # size mismatch
+
+
+@pytest.mark.parametrize("notes", [5, 2])  # 2: sparse, whole-note style measures
+def test_page_switch_pages_with_aligned_bar_lines_pass_through(notes):
+    images = [render_tab_page(p, notes) for p in ([1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12])]
+    for a, b in zip(images, images[1:], strict=False):
+        assert overlap_shift(a, b)[1] < OVERLAP_THRESHOLD
+    pages = as_pages(images)
+    assert all(a is b for a, b in zip(stitch_pages(pages), pages, strict=True))
 
 
 def test_find_bars_on_strip():

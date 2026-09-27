@@ -168,3 +168,28 @@ def make_scroll_video(path: Path, page_seconds: float = 1.2) -> list[np.ndarray]
             writer.write(frame)
     writer.release()
     return pages
+
+
+def render_tab_page(patterns: list[int], notes: int = 5) -> np.ndarray:
+    """A page of len(patterns) measures, SCROLL_MEASURE_W px each, bar lines at the same
+    x as scroll_bar_xs(). Measure i's fret numbers come from seed patterns[i], so equal
+    seeds draw identical measures (a repeated riff)."""
+    oy = ROI_TRUTH.y
+    width = SCROLL_X0 + len(patterns) * SCROLL_MEASURE_W + SCROLL_X0
+    page = np.full((ROI_TRUTH.h, width, 3), 255, np.uint8)
+    for y in LINE_YS:
+        cv2.line(page, (0, y - oy), (width - 1, y - oy), (0, 0, 0), 1)
+    for x in scroll_bar_xs()[: len(patterns) + 1]:
+        cv2.line(page, (x, LINE_YS[0] - oy), (x, LINE_YS[-1] - oy), (0, 0, 0), 2)
+    gap = (SCROLL_MEASURE_W - 30) // notes
+    for m, pattern in enumerate(patterns):
+        rng = np.random.default_rng(pattern)
+        for k in range(notes):
+            x = SCROLL_X0 + m * SCROLL_MEASURE_W + 15 + k * gap
+            y = LINE_YS[int(rng.integers(0, 6))] - oy
+            text = str(int(rng.integers(0, 20)))
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            box = ((x - 1, y - th // 2 - 2), (x + tw + 1, y + th // 2 + 2))
+            cv2.rectangle(page, *box, (255,) * 3, -1)
+            cv2.putText(page, text, (x, y + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,) * 3, 1)
+    return page
