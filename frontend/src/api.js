@@ -7,7 +7,9 @@ async function request(method, url, body) {
   }
   const res = await fetch(url, init)
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.detail || `请求失败 (${res.status})`)
+  if (!res.ok) {
+    throw new Error(typeof data.detail === 'string' ? data.detail : `请求失败 (${res.status})`)
+  }
   return data
 }
 

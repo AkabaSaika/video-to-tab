@@ -15,9 +15,20 @@ function remove(index) {
   pages.value = pages.value.filter((_, i) => i !== index)
 }
 
+function onDragStart(event, index) {
+  dragFrom.value = index
+  // Firefox refuses to start a drag unless data is set on the dataTransfer.
+  event.dataTransfer.setData('text/plain', '')
+}
+
 function onDrop(index) {
   if (dragFrom.value !== null) pages.value = moveItem(pages.value, dragFrom.value, index)
   dragFrom.value = null
+}
+
+function duplicateLabel(dupId) {
+  const original = props.job.pages.find((p) => p.id === dupId)
+  return original ? `重复：同 ${formatTime(original.start)} 段` : '重复'
 }
 
 async function exportAs(fmt) {
@@ -51,7 +62,7 @@ async function exportAs(fmt) {
     :key="page.id"
     class="card page"
     draggable="true"
-    @dragstart="dragFrom = i"
+    @dragstart="onDragStart($event, i)"
     @dragover.prevent
     @drop="onDrop(i)"
   >
@@ -60,7 +71,7 @@ async function exportAs(fmt) {
       <a :href="api.frameUrl(job.id, page.start)" target="_blank">
         {{ formatTime(page.start) }} – {{ formatTime(page.end) }}
       </a>
-      <span v-if="page.duplicate_of !== null" class="dup">重复：同第 {{ page.duplicate_of + 1 }} 段</span>
+      <span v-if="page.duplicate_of !== null" class="dup">{{ duplicateLabel(page.duplicate_of) }}</span>
       <button class="remove" title="删除" @click="remove(i)">×</button>
     </div>
     <img :src="api.fileUrl(job.id, page.file)" draggable="false" />

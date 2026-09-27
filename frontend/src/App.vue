@@ -13,7 +13,13 @@ function track(next) {
   job.value = next
   clearTimeout(timer)
   if (next.status === 'downloading' || next.status === 'analyzing') {
-    timer = setTimeout(async () => track(await api.getJob(next.id)), 800)
+    timer = setTimeout(async () => {
+      try {
+        track(await api.getJob(next.id))
+      } catch (e) {
+        track({ ...next, status: 'failed', error: e.message })
+      }
+    }, 800)
   }
 }
 
