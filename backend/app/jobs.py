@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -40,15 +41,21 @@ class Job:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["dir"] = str(self.dir)
+        del d["dir"]  # absolute filesystem path; not for clients or state.json
         return d
 
 
 class JobStore:
+    # Keys that only carry incremental progress info; updates touching only these are
+    # throttled (see update()) since analysis can emit thousands of them per job.
+    _PROGRESS_ONLY_KEYS = frozenset({"progress", "stage"})
+    _PROGRESS_SAVE_INTERVAL = 0.5  # seconds
+
     def __init__(self, root: Path):
         self.root = root
         self._jobs: dict[str, Job] = {}
         self._lock = threading.RLock()
+        self._last_save: dict[str, float] = {}
 
     def create(self) -> Job:
         job_id = uuid.uuid4().hex[:12]
@@ -70,6 +77,11 @@ class JobStore:
         with self._lock:
             for key, value in changes.items():
                 setattr(job, key, value)
+            if changes.keys() <= self._PROGRESS_ONLY_KEYS:
+                now = time.monotonic()
+                if now - self._last_save.get(job.id, 0.0) < self._PROGRESS_SAVE_INTERVAL:
+                    return
+            self._last_save[job.id] = time.monotonic()
             self.save(job)
 
     def transition(self, job: Job, allowed: tuple[Status, ...], **changes) -> bool:

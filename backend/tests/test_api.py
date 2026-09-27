@@ -100,6 +100,74 @@ def test_rejects_bad_input(tmp_path):
     assert client.get("/api/jobs/nope").status_code == 404
 
 
+def test_rejected_upload_leaves_no_job_dir(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    r = client.post("/api/jobs", files={"file": ("a.txt", b"hi", "text/plain")})
+    assert r.status_code == 400
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_region_requires_prepare_finished(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    store = app.state.store
+    job = store.create()
+    store.update(job, video="source.avi")  # video present, but prepare() hasn't set region yet
+
+    r = client.put(f"/api/jobs/{job.id}/region", json={"x": 0, "y": 0, "w": 10, "h": 10})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "视频尚未就绪"
+
+
+def test_export_oserror_returns_500(tmp_path, monkeypatch):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    store = app.state.store
+    job = store.create()
+    job.pages = [{"id": 0, "file": "pages/000.png", "start": 0.0, "end": 1.0, "duplicate_of": None}]
+
+    def boom(*a, **k):
+        raise OSError("磁盘已满")
+
+    monkeypatch.setattr(workflow, "export", boom)
+    r = client.post(f"/api/jobs/{job.id}/export", json={"order": [0], "fmt": "png"})
+    assert r.status_code == 500
+    assert r.json()["detail"] == "磁盘已满"
+
+
+def test_frame_decode_error_returns_400(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    store = app.state.store
+    job = store.create()
+    (job.dir / "source.avi").write_bytes(b"not a video")
+    store.update(job, video="source.avi")
+
+    r = client.get(f"/api/jobs/{job.id}/frame", params={"t": 0.0})
+    assert r.status_code == 400
+
+
+def test_progress_updates_are_throttled(tmp_path, monkeypatch):
+    store = JobStore(tmp_path)
+    job = store.create()
+    calls = []
+    monkeypatch.setattr(store, "save", lambda j: calls.append(j))
+
+    for _ in range(100):
+        store.update(job, progress=0.5, stage="scan")
+    progress_only_calls = len(calls)
+    assert 0 < progress_only_calls < 100
+
+    store.update(job, status=Status.ANALYZING)
+    assert len(calls) == progress_only_calls + 1
+
+
+def test_job_to_dict_excludes_dir(tmp_path):
+    store = JobStore(tmp_path)
+    job = store.create()
+    assert "dir" not in job.to_dict()
+
+
 def test_safe_path(tmp_path):
     (tmp_path / "job").mkdir()
     (tmp_path / "job" / "a.png").write_bytes(b"x")

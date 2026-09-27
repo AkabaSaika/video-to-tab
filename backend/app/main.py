@@ -12,11 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import workflow
-from app.frames import frame_at
+from app.frames import DecodeError, frame_at
 from app.jobs import Job, JobStore, Status
 from app.models import Roi
 from app.pipeline import AnalyzeParams
-from app.source import SourceError, normalize_url, save_upload
+from app.source import VIDEO_EXTS, SourceError, normalize_url, save_upload
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -68,6 +68,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(400, "请上传视频文件或填写链接（二选一）")
         try:
             clean_url = normalize_url(url) if url else None
+            if file is not None:
+                ext = Path(file.filename or "").suffix.lower()
+                if ext not in VIDEO_EXTS:
+                    raise SourceError(f"不支持的文件类型：{ext or '无扩展名'}")
             job = store.create()
             if file is not None:
                 path = save_upload(file.file, file.filename or "", job.dir)
@@ -84,7 +88,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.put("/api/jobs/{job_id}/region")
     def set_region(job_id: str, body: RegionIn) -> dict:
         job = get_job(job_id)
-        if not job.video:
+        if not job.region:
             raise HTTPException(409, "视频尚未就绪")
         roi = Roi(body.x, body.y, body.w, body.h)
         params = AnalyzeParams(body.fps, body.diff_threshold, body.min_duration)
@@ -101,6 +105,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             name = workflow.export(job, body.order, body.fmt)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, str(exc)) from exc
         return {"url": f"/api/jobs/{job_id}/files/{name}"}
 
     @app.get("/api/jobs/{job_id}/frame")
@@ -108,7 +114,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         job = get_job(job_id)
         if not job.video:
             raise HTTPException(409, "视频尚未就绪")
-        ok, buf = cv2.imencode(".jpg", frame_at(job.dir / job.video, t))
+        try:
+            img = frame_at(job.dir / job.video, t)
+        except DecodeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ok, buf = cv2.imencode(".jpg", img)
         if not ok:
             raise HTTPException(500, "帧图像编码失败")
         return Response(buf.tobytes(), media_type="image/jpeg")
