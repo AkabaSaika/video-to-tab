@@ -38,6 +38,13 @@ def test_ink_mask_drops_staff_lines_keeps_digits():
     assert mask.sum() > 200  # fret numbers are still there
 
 
+def test_ink_mask_drops_bar_lines():
+    page = render_tab_page([1, 2, 3, 4])
+    mask = ink_mask(page)
+    for x in scroll_bar_xs()[:5]:
+        assert mask[:, x - 2 : x + 3].sum() < 20  # at most bits of digits near the bar
+
+
 def test_overlap_shift_finds_scroll_step_despite_highlight():
     pages = scroll_pages(render_scroll_strip())
     for a, b in zip(pages, pages[1:], strict=False):
