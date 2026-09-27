@@ -95,3 +95,56 @@ def make_video(path: Path, dark: bool = False) -> SynthVideo:
         writer.write(frame)
     writer.release()
     return SynthVideo(path, ROI_TRUTH, panels)
+
+
+# --- step-scrolling tab (Songsterr style) -------------------------------------------
+
+SCROLL_MEASURES = 12
+SCROLL_MEASURE_W = 180
+SCROLL_X0 = 20  # x of the first bar line in the strip
+SCROLL_STEP = 360  # px the tab jumps per page; pages are ROI_TRUTH.w = 600 wide
+HIGHLIGHT = (170, 240, 250)  # light yellow (BGR), grey ~230
+
+
+def scroll_bar_xs() -> list[int]:
+    return [SCROLL_X0 + i * SCROLL_MEASURE_W for i in range(SCROLL_MEASURES + 1)]
+
+
+def render_scroll_strip(seed: int = 7) -> np.ndarray:
+    """One long tab line: staff, a bar line at every measure start and at the end,
+    fret numbers on white boxes."""
+    oy = ROI_TRUTH.y
+    content = SCROLL_X0 + SCROLL_MEASURES * SCROLL_MEASURE_W + SCROLL_X0
+    steps = -(-(content - ROI_TRUTH.w) // SCROLL_STEP)  # ceil: last page reaches the end
+    width = ROI_TRUTH.w + steps * SCROLL_STEP
+    strip = np.full((ROI_TRUTH.h, width, 3), 255, np.uint8)
+    for y in LINE_YS:
+        cv2.line(strip, (0, y - oy), (width - 1, y - oy), (0, 0, 0), 1)
+    for x in scroll_bar_xs():
+        cv2.line(strip, (x, LINE_YS[0] - oy), (x, LINE_YS[-1] - oy), (0, 0, 0), 2)
+    rng = np.random.default_rng(seed)
+    for m in range(SCROLL_MEASURES):
+        for k in range(5):
+            x = SCROLL_X0 + m * SCROLL_MEASURE_W + 20 + k * 32
+            y = LINE_YS[int(rng.integers(0, 6))] - oy
+            text = str(int(rng.integers(0, 20)))
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            box = ((x - 1, y - th // 2 - 2), (x + tw + 1, y + th // 2 + 2))
+            cv2.rectangle(strip, *box, (255,) * 3, -1)
+            cv2.putText(strip, text, (x, y + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,) * 3, 1)
+    return strip
+
+
+def scroll_pages(strip: np.ndarray, highlight: bool = True) -> list[np.ndarray]:
+    """Page crops as the video shows them: each jumps SCROLL_STEP px further right and
+    (optionally) highlights the measure being played in yellow."""
+    width = ROI_TRUTH.w
+    pages = []
+    for x in range(0, strip.shape[1] - width + 1, SCROLL_STEP):
+        page = strip[:, x : x + width].copy()
+        if highlight:
+            bar = next(b for b in scroll_bar_xs() if b >= x + 40) - x
+            sub = page[:, bar : min(width, bar + SCROLL_MEASURE_W)]
+            sub[(sub == 255).all(axis=2)] = HIGHLIGHT
+        pages.append(page)
+    return pages

@@ -1,0 +1,79 @@
+from app.models import Page
+from app.stitch import (
+    OVERLAP_THRESHOLD,
+    find_bars,
+    ink_mask,
+    line_ranges,
+    overlap_shift,
+    stitch_pages,
+)
+from tests.synth import (
+    LINE_YS,
+    ROI_TRUTH,
+    SCROLL_MEASURES,
+    SCROLL_STEP,
+    render_panel,
+    render_scroll_strip,
+    scroll_bar_xs,
+    scroll_pages,
+)
+
+
+def as_pages(images, seconds=1.0):
+    return [Page(img, i * seconds, (i + 1) * seconds) for i, img in enumerate(images)]
+
+
+def test_ink_mask_drops_staff_lines_keeps_digits():
+    panel = render_panel(1)
+    mask = ink_mask(panel)
+    for y in LINE_YS:
+        assert mask[y - ROI_TRUTH.y].mean() < 0.3  # only digit strokes remain on the row
+    assert mask.sum() > 200  # fret numbers are still there
+
+
+def test_overlap_shift_finds_scroll_step_despite_highlight():
+    pages = scroll_pages(render_scroll_strip())
+    for a, b in zip(pages, pages[1:], strict=False):
+        shift, score = overlap_shift(a, b)
+        assert abs(shift - SCROLL_STEP) <= 3
+        assert score >= OVERLAP_THRESHOLD
+
+
+def test_page_switch_panels_do_not_overlap():
+    panels = [render_panel(seed) for seed in (1, 2, 3)]
+    for a, b in zip(panels, panels[1:], strict=False):
+        assert overlap_shift(a, b)[1] < OVERLAP_THRESHOLD
+    assert overlap_shift(panels[0], panels[0][:, :300])[1] == 0.0  # size mismatch
+
+
+def test_find_bars_on_strip():
+    bars = find_bars(render_scroll_strip())
+    assert len(bars) == len(scroll_bar_xs())
+    assert all(abs(b - x) <= 2 for b, x in zip(bars, scroll_bar_xs(), strict=True))
+
+
+def test_line_ranges_packs_whole_measures():
+    assert line_ranges(1000, [100, 300, 500, 900], 450) == [
+        (0, 297),
+        (297, 497),
+        (497, 897),
+        (897, 1000),
+    ]
+    assert line_ranges(1000, [], 450) == [(0, 450), (450, 900), (900, 1000)]
+    assert line_ranges(1000, [100], 50) == [(0, 97), (97, 1000)]  # oversized measure
+
+
+def test_stitch_pages_rebuilds_every_measure_once():
+    pages = as_pages(scroll_pages(render_scroll_strip()))
+    lines = stitch_pages(pages)
+    assert len(lines) < len(pages)
+    assert all(line.image.shape[1] <= ROI_TRUTH.w for line in lines)
+    bars = sum(len(find_bars(line.image)) for line in lines)
+    assert bars == SCROLL_MEASURES + 1  # every bar line exactly once
+    assert lines[0].start == pages[0].start and lines[-1].end == pages[-1].end
+
+
+def test_stitch_pages_passes_page_switch_through():
+    pages = as_pages([render_panel(seed) for seed in (1, 2, 3)])
+    assert all(a is b for a, b in zip(stitch_pages(pages), pages, strict=True))
+    assert stitch_pages([]) == []
