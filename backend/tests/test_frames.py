@@ -24,6 +24,8 @@ def test_grab_frames_spreads_over_video(synth_video):
     frames = grab_frames(synth_video.path, 10)
     assert len(frames) == 10
     assert frames[0].shape == (480, 640, 3)
+    assert ROI_TRUTH.crop(frames[0]).min() > 150  # t=0: blank panel (intro)
+    assert ROI_TRUTH.crop(frames[-1]).min() < 100  # near the end: a tab page with ink
 
 
 def test_frame_at_matches_sequential_decode(synth_video):
