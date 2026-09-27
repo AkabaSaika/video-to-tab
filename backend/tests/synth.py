@@ -148,3 +148,23 @@ def scroll_pages(strip: np.ndarray, highlight: bool = True) -> list[np.ndarray]:
             sub[(sub == 255).all(axis=2)] = HIGHLIGHT
         pages.append(page)
     return pages
+
+
+def make_scroll_video(path: Path, page_seconds: float = 1.2) -> list[np.ndarray]:
+    """Video whose tab panel shows scroll_pages() one after another (hard cuts)."""
+    pages = scroll_pages(render_scroll_strip())
+    rng = np.random.default_rng(1)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), FPS, (W, H))
+    per_page = int(round(page_seconds * FPS))
+    r = ROI_TRUTH
+    for page in pages:
+        for f in range(per_page):
+            frame = rng.integers(0, 256, (H, W, 3), dtype=np.uint8)
+            frame[r.y :, :] = 90
+            panel = page.copy()
+            cx = int(f / per_page * (r.w - 1))
+            cv2.line(panel, (cx, 0), (cx, r.h - 1), (0, 0, 255), 3)
+            frame[r.y : r.y + r.h, r.x : r.x + r.w] = panel
+            writer.write(frame)
+    writer.release()
+    return pages

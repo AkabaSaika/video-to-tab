@@ -9,6 +9,7 @@ from app.frames import probe, sample_frames
 from app.models import Page, Roi
 from app.region import has_staff_lines
 from app.segment import SegmentParams, find_segments, prep_gray
+from app.stitch import stitch_pages
 
 Progress = Callable[[str, float], None]
 
@@ -47,7 +48,7 @@ def analyze(
         video, roi, segments, params.fps, lambda i: progress("compose", min(1.0, i / total))
     )
     pages = [p for p in pages if has_staff_lines(p.image)]
-    pages = mark_repeats(merge_adjacent(pages))
+    pages = mark_repeats(stitch_pages(merge_adjacent(pages)))
     if not pages:
         raise NoPagesFound("没有找到稳定的谱面，请检查框选区域或降低变化阈值")
     return pages

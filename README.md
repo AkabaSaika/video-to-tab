@@ -16,6 +16,7 @@
     cd backend && uv run uvicorn app.main:app --port 8000
 
 浏览器打开 http://127.0.0.1:8000 ：上传视频或粘贴 bilibili / YouTube 链接 → 确认谱面区域 → 校对页面 → 导出 PNG / PDF。
+- 分段横向滚动的谱面（相邻页有重叠）会自动拼接去重，并按小节重新排成行；整页切换的谱面保持原样。
 
 - B 站需要登录或受地区限制时：导出浏览器 cookies（Netscape 格式）并设置 `VTT_COOKIES_FILE=/path/cookies.txt` 后启动。
 - 数据目录默认 `data/jobs/`，可用 `VTT_DATA_DIR` 修改。

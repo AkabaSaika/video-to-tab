@@ -1,4 +1,5 @@
-from app.models import Page
+from app.models import Page, Roi
+from app.pipeline import analyze
 from app.stitch import (
     OVERLAP_THRESHOLD,
     find_bars,
@@ -77,3 +78,11 @@ def test_stitch_pages_passes_page_switch_through():
     pages = as_pages([render_panel(seed) for seed in (1, 2, 3)])
     assert all(a is b for a, b in zip(stitch_pages(pages), pages, strict=True))
     assert stitch_pages([]) == []
+
+
+def test_analyze_scroll_video(scroll_video):
+    lines = analyze(scroll_video, Roi(ROI_TRUTH.x, ROI_TRUTH.y, ROI_TRUTH.w, ROI_TRUTH.h))
+    bars = sum(len(find_bars(line.image)) for line in lines)
+    assert bars == SCROLL_MEASURES + 1
+    assert all(line.duplicate_of is None for line in lines)
+    assert all(line.start < line.end for line in lines)
