@@ -66,7 +66,8 @@ def overlap_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, float]:
 
 
 def find_bars(strip: np.ndarray) -> list[int]:
-    """x of bar lines: columns inked over >=90% of the tab staff's height."""
+    """x of bar lines: columns inked over >=90% of the tab staff's height. A double or
+    final bar line counts once, at its first (leftmost) column."""
     gray = _gray(strip)  # light theme, so staff detection sees the lines, not the gaps
     staves = detect_staves(gray)
     if not staves:
@@ -77,7 +78,7 @@ def find_bars(strip: np.ndarray) -> list[int]:
     if cols.size == 0:
         return []
     groups = np.split(cols, np.flatnonzero(np.diff(cols) > BAR_MERGE_GAP) + 1)
-    return [int(round(g.mean())) for g in groups]
+    return [int(g[0]) for g in groups]
 
 
 def build_strip(group: list[Page], shifts: list[int]) -> tuple[np.ndarray, list[tuple]]:
@@ -93,10 +94,13 @@ def build_strip(group: list[Page], shifts: list[int]) -> tuple[np.ndarray, list[
 
 def line_ranges(strip_width: int, bars: list[int], width: int) -> list[tuple[int, int]]:
     """Greedy packing of measures into [x0, x1) lines no wider than `width`
-    (a single wider measure gets its own line). Without bars, cut every `width` px."""
+    (a single wider measure gets its own line). Without bars, cut every `width` px.
+    Bars within 2 * BAR_MARGIN of either end are ignored so no sliver line is made."""
     if not bars:
         return [(x, min(x + width, strip_width)) for x in range(0, strip_width, width)]
-    cuts = sorted({0, strip_width, *(max(0, b - BAR_MARGIN) for b in bars)})
+    inner = (b - BAR_MARGIN for b in bars)
+    edge = 2 * BAR_MARGIN
+    cuts = sorted({0, strip_width, *(c for c in inner if edge <= c <= strip_width - edge)})
     lines: list[tuple[int, int]] = []
     start, end = cuts[0], cuts[0]
     for cut in cuts[1:]:

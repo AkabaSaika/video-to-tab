@@ -1,8 +1,11 @@
+import cv2
+import numpy as np
 import pytest
 
 from app.models import Page, Roi
 from app.pipeline import analyze
 from app.stitch import (
+    BAR_MARGIN,
     OVERLAP_THRESHOLD,
     find_bars,
     ink_mask,
@@ -75,6 +78,19 @@ def test_find_bars_on_strip():
     assert all(abs(b - x) <= 2 for b, x in zip(bars, scroll_bar_xs(), strict=True))
 
 
+def test_find_bars_double_bar_is_cut_left_of_both_strokes():
+    strip = render_scroll_strip()
+    x, oy = scroll_bar_xs()[6], ROI_TRUTH.y
+    cv2.line(strip, (x + 6, LINE_YS[0] - oy), (x + 6, LINE_YS[-1] - oy), (0, 0, 0), 2)
+    gap_row = strip[LINE_YS[2] - oy + 8, x - 5 : x + 12, 0]
+    first = int(np.flatnonzero(gap_row < 128)[0]) + x - 5  # leftmost column of stroke 1
+    bars = find_bars(strip)
+    assert len(bars) == len(scroll_bar_xs())
+    assert bars[6] == first
+    starts = [x0 for x0, _ in line_ranges(strip.shape[1], bars, ROI_TRUTH.w)]
+    assert first - BAR_MARGIN in starts
+
+
 def test_line_ranges_packs_whole_measures():
     assert line_ranges(1000, [100, 300, 500, 900], 450) == [
         (0, 297),
@@ -84,6 +100,8 @@ def test_line_ranges_packs_whole_measures():
     ]
     assert line_ranges(1000, [], 450) == [(0, 450), (450, 900), (900, 1000)]
     assert line_ranges(1000, [100], 50) == [(0, 97), (97, 1000)]  # oversized measure
+    assert line_ranges(1000, [100, 998], 450) == [(0, 97), (97, 1000)]  # no end sliver
+    assert line_ranges(1000, [4, 500], 450) == [(0, 497), (497, 1000)]  # no start sliver
 
 
 def test_stitch_pages_rebuilds_every_measure_once():
