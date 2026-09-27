@@ -56,7 +56,7 @@ def paginate(images: list[np.ndarray], gap: int = GAP) -> list[np.ndarray]:
         used += need
     result = []
     for group in sheets:
-        body = stitch_vertical(group, gap)
+        body = _pad_width(stitch_vertical(group, gap), width)  # sheets share one width
         height = max(sheet_h, body.shape[0])
         canvas = np.full((height, width, 3), 255, np.uint8)
         canvas[: body.shape[0]] = body

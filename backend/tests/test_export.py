@@ -44,3 +44,15 @@ def test_empty_input_raises_chinese_error(tmp_path):
 def test_export_png_reports_write_failure(tmp_path):
     with pytest.raises(OSError, match="无法写入文件"):
         export_png([img(10, 50)], tmp_path / "missing_dir" / "t.png")
+
+
+def test_paginate_handles_sheets_narrower_than_widest_image(tmp_path):
+    # re-flowed tab lines differ in width; a sheet without the widest line must still
+    # be padded to the common sheet width
+    images = [img(100, 100), img(200, 80)]  # the 80-wide image lands on its own sheet
+    sheets = paginate(images)
+    assert len(sheets) == 2
+    assert all(s.shape[1] == 100 for s in sheets)
+    assert (sheets[1][:200, 80:] == 255).all()  # right padding
+    assert (sheets[1][:200, :80] == 0).all()  # content kept
+    export_pdf(images, tmp_path / "mixed.pdf")
