@@ -1,0 +1,32 @@
+import re
+
+import numpy as np
+
+from app.export import GAP, export_pdf, export_png, paginate, stitch_vertical
+
+
+def img(h, w, value=0):
+    return np.full((h, w, 3), value, np.uint8)
+
+
+def test_stitch_pads_width_and_adds_gaps():
+    out = stitch_vertical([img(10, 100), img(20, 80)])
+    assert out.shape == (10 + GAP + 20, 100, 3)
+    assert (out[10 : 10 + GAP] == 255).all()  # white gap
+    assert (out[10 + GAP :, 80:] == 255).all()  # right padding of the narrow image
+
+
+def test_paginate_never_splits_an_image():
+    sheets = paginate([img(100, 100)] * 3)  # A4 sheet of width 100 is 141 tall
+    assert len(sheets) == 3
+    assert all(s.shape == (141, 100, 3) for s in sheets)
+    assert len(paginate([img(30, 100)] * 3)) == 1
+
+
+def test_export_files(tmp_path):
+    png = export_png([img(10, 50), img(10, 50)], tmp_path / "t.png")
+    assert png.read_bytes()[:4] == b"\x89PNG"
+    pdf = export_pdf([img(100, 100)] * 3, tmp_path / "t.pdf")
+    data = pdf.read_bytes()
+    assert data.startswith(b"%PDF")
+    assert len(re.findall(rb"/Type\s*/Page(?!s)", data)) == 3
