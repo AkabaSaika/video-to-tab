@@ -1,7 +1,11 @@
+import shutil
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app import workflow
+from app.jobs import JobStore, Status
 from app.main import create_app, safe_path
 
 
@@ -53,3 +57,76 @@ def test_safe_path(tmp_path):
     assert safe_path(tmp_path / "job", "a.png") == (tmp_path / "job" / "a.png").resolve()
     assert safe_path(tmp_path / "job", "../secret") is None
     assert safe_path(tmp_path / "job", "missing.png") is None
+
+
+def test_transition_is_atomic(tmp_path):
+    store = JobStore(tmp_path)
+    job = store.create()
+    store.update(job, status=Status.READY_FOR_REGION)
+    allowed = (Status.READY_FOR_REGION, Status.READY_FOR_REVIEW, Status.FAILED)
+
+    assert store.transition(job, allowed, status=Status.ANALYZING, error=None) is True
+    assert job.status == Status.ANALYZING
+
+    # Second call finds the job already ANALYZING (not in `allowed`) and must be refused,
+    # proving two concurrent callers can't both win the transition.
+    assert store.transition(job, allowed, status=Status.ANALYZING, error=None) is False
+    assert job.status == Status.ANALYZING
+
+
+def test_region_conflict_while_busy(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    store = app.state.store
+    job = store.create()
+    store.update(job, status=Status.ANALYZING, video="source.avi")
+
+    r = client.put(f"/api/jobs/{job.id}/region", json={"x": 0, "y": 0, "w": 10, "h": 10})
+    assert r.status_code == 409
+
+
+def test_run_wraps_unexpected_exceptions_in_chinese(tmp_path):
+    store = JobStore(tmp_path)
+    job = store.create()
+
+    def boom():
+        raise RuntimeError("boom")
+
+    store.run(job, boom).join()
+    assert job.status == Status.FAILED
+    assert job.error.startswith("处理失败（RuntimeError）")
+
+
+def test_run_keeps_known_app_errors_verbatim(tmp_path):
+    store = JobStore(tmp_path)
+    job = store.create()
+
+    def boom():
+        raise ValueError("没有选中任何页面")
+
+    store.run(job, boom).join()
+    assert job.status == Status.FAILED
+    assert job.error == "没有选中任何页面"
+
+
+def test_export_raises_on_missing_page_file(tmp_path):
+    store = JobStore(tmp_path)
+    job = store.create()
+    job.pages = [{"id": 0, "file": "pages/000.png", "start": 0.0, "end": 1.0, "duplicate_of": None}]
+
+    with pytest.raises(ValueError, match="页面文件缺失"):
+        workflow.export(job, [0], "png")
+
+
+def test_frame_encode_failure_returns_500(tmp_path, synth_video, monkeypatch):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    store = app.state.store
+    job = store.create()
+    shutil.copy(synth_video.path, job.dir / "source.avi")
+    store.update(job, video="source.avi")
+
+    monkeypatch.setattr("app.main.cv2.imencode", lambda *a, **k: (False, None))
+    r = client.get(f"/api/jobs/{job.id}/frame", params={"t": 0.0})
+    assert r.status_code == 500
+    assert r.json()["detail"] == "帧图像编码失败"

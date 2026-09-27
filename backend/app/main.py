@@ -74,13 +74,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.put("/api/jobs/{job_id}/region")
     def set_region(job_id: str, body: RegionIn) -> dict:
         job = get_job(job_id)
-        if job.status not in (Status.READY_FOR_REGION, Status.READY_FOR_REVIEW, Status.FAILED):
-            raise HTTPException(409, f"当前状态不能开始分析：{job.status}")
         if not job.video:
             raise HTTPException(409, "视频尚未就绪")
         roi = Roi(body.x, body.y, body.w, body.h)
         params = AnalyzeParams(body.fps, body.diff_threshold, body.min_duration)
-        store.update(job, status=Status.ANALYZING, error=None)
+        allowed = (Status.READY_FOR_REGION, Status.READY_FOR_REVIEW, Status.FAILED)
+        if not store.transition(job, allowed, status=Status.ANALYZING, error=None):
+            raise HTTPException(409, f"当前状态不能开始分析：{job.status}")
         store.run(job, lambda: workflow.run_analysis(store, job, roi, params))
         return job.to_dict()
 
@@ -99,6 +99,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not job.video:
             raise HTTPException(409, "视频尚未就绪")
         ok, buf = cv2.imencode(".jpg", frame_at(job.dir / job.video, t))
+        if not ok:
+            raise HTTPException(500, "帧图像编码失败")
         return Response(buf.tobytes(), media_type="image/jpeg")
 
     @app.get("/api/jobs/{job_id}/files/{name:path}")

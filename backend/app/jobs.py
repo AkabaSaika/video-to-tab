@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
+
+from app.frames import DecodeError
+from app.pipeline import NoPagesFound
+from app.source import SourceError
 
 
 class Status(StrEnum):
@@ -43,7 +48,7 @@ class JobStore:
     def __init__(self, root: Path):
         self.root = root
         self._jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def create(self) -> Job:
         job_id = uuid.uuid4().hex[:12]
@@ -62,18 +67,44 @@ class JobStore:
         (job.dir / "state.json").write_text(json.dumps(job.to_dict(), ensure_ascii=False, indent=2))
 
     def update(self, job: Job, **changes) -> None:
-        for key, value in changes.items():
-            setattr(job, key, value)
-        self.save(job)
+        with self._lock:
+            for key, value in changes.items():
+                setattr(job, key, value)
+            self.save(job)
+
+    def transition(self, job: Job, allowed: tuple[Status, ...], **changes) -> bool:
+        """Atomically apply `changes` iff job.status is currently in `allowed`.
+
+        Guards against two concurrent callers both passing a status check and
+        launching duplicate work (e.g. two PUT /region requests racing).
+        """
+        with self._lock:
+            if job.status not in allowed:
+                return False
+            for key, value in changes.items():
+                setattr(job, key, value)
+            self.save(job)
+            return True
 
     def run(self, job: Job, fn: Callable[[], None]) -> threading.Thread:
-        """Run fn in a daemon thread; any exception marks the job failed."""
+        """Run fn in a daemon thread; any exception marks the job failed.
+
+        App-level errors (already Chinese, or yt-dlp errors wrapped in Chinese by
+        SourceError) are surfaced verbatim. Anything else is an unexpected bug, so
+        it's wrapped in a generic Chinese message and the traceback is logged.
+        """
 
         def target() -> None:
             try:
                 fn()
-            except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            except (SourceError, DecodeError, NoPagesFound, ValueError) as exc:
+                logging.getLogger(__name__).exception("job %s failed", job.id)
                 self.update(job, status=Status.FAILED, error=str(exc))
+            except Exception as exc:  # noqa: BLE001 - deliberately broad: any bug must fail the job
+                logging.getLogger(__name__).exception("job %s failed", job.id)
+                self.update(
+                    job, status=Status.FAILED, error=f"处理失败（{type(exc).__name__}）：{exc}"
+                )
 
         thread = threading.Thread(target=target, daemon=True)
         thread.start()

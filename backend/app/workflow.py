@@ -74,7 +74,15 @@ def run_analysis(store: JobStore, job: Job, roi: Roi, params: AnalyzeParams) -> 
 
 def export(job: Job, order: list[int], fmt: str) -> str:
     by_id = {p["id"]: p for p in job.pages}
-    images = [cv2.imread(str(job.dir / by_id[i]["file"])) for i in order if i in by_id]
+    images = []
+    for i in order:
+        if i not in by_id:
+            continue
+        file = by_id[i]["file"]
+        image = cv2.imread(str(job.dir / file))
+        if image is None:
+            raise ValueError(f"页面文件缺失：{file}")
+        images.append(image)
     if not images:
         raise ValueError("没有选中任何页面")
     name = f"tab.{fmt}"
