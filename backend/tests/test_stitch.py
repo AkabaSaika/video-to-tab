@@ -96,6 +96,17 @@ def test_stitch_pages_rebuilds_every_measure_once():
     assert lines[0].start == pages[0].start and lines[-1].end == pages[-1].end
 
 
+def test_stitch_pages_dark_theme():
+    images = [255 - page for page in scroll_pages(render_scroll_strip())]
+    for a, b in zip(images, images[1:], strict=False):
+        shift, score = overlap_shift(a, b)
+        assert abs(shift - SCROLL_STEP) <= 3
+        assert score >= OVERLAP_THRESHOLD
+    lines = stitch_pages(as_pages(images))
+    assert len(lines) < len(images)
+    assert sum(len(find_bars(line.image)) for line in lines) == SCROLL_MEASURES + 1
+
+
 def test_stitch_pages_passes_page_switch_through():
     pages = as_pages([render_panel(seed) for seed in (1, 2, 3)])
     assert all(a is b for a, b in zip(stitch_pages(pages), pages, strict=True))

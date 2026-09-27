@@ -25,7 +25,9 @@ BAR_MARGIN = 3  # px kept left of a bar line so each measure starts with its bar
 
 
 def _gray(img: np.ndarray) -> np.ndarray:
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    """Grayscale with dark ink on a light background; a dark theme is inverted."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    return 255 - gray if np.median(gray) < 128 else gray
 
 
 def ink_mask(img: np.ndarray) -> np.ndarray:
@@ -65,11 +67,12 @@ def overlap_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, float]:
 
 def find_bars(strip: np.ndarray) -> list[int]:
     """x of bar lines: columns inked over >=90% of the tab staff's height."""
-    staves = detect_staves(strip)
+    gray = _gray(strip)  # light theme, so staff detection sees the lines, not the gaps
+    staves = detect_staves(gray)
     if not staves:
         return []
     staff = max(staves, key=lambda st: (len(st.lines), st.lines[0]))
-    dark = _gray(strip)[staff.lines[0] : staff.lines[-1] + 1] < INK_LEVEL
+    dark = gray[staff.lines[0] : staff.lines[-1] + 1] < INK_LEVEL
     cols = np.flatnonzero(dark.mean(axis=0) >= BAR_COVERAGE)
     if cols.size == 0:
         return []
