@@ -1,0 +1,82 @@
+"""Job-level steps glued to the pipeline; each runs inside JobStore.run()."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import cv2
+
+from app.export import export_pdf, export_png
+from app.frames import grab_frames, probe
+from app.jobs import Job, JobStore, Status
+from app.models import Roi
+from app.pipeline import AnalyzeParams, analyze
+from app.region import detect_region
+from app.source import download_url
+
+
+def prepare(store: JobStore, job: Job, url: str | None = None) -> None:
+    """Download (if url) then probe the video and guess the tab region."""
+    if url:
+        store.update(job, status=Status.DOWNLOADING, stage="download")
+        cookies = os.environ.get("VTT_COOKIES_FILE")
+        path = download_url(
+            url,
+            job.dir,
+            Path(cookies) if cookies else None,
+            lambda f: store.update(job, progress=f),
+        )
+        store.update(job, video=path.name)
+    video = job.dir / job.video
+    store.update(job, stage="probe", progress=0.0)
+    info = probe(video)
+    frames = grab_frames(video, 20)
+    guess = detect_region(frames)
+    cv2.imwrite(str(job.dir / "frame.jpg"), frames[len(frames) // 2])
+    store.update(
+        job,
+        width=info.width,
+        height=info.height,
+        duration=info.duration,
+        region={"roi": guess.roi.to_dict(), "confidence": guess.confidence},
+        status=Status.READY_FOR_REGION,
+        stage="",
+        progress=1.0,
+    )
+
+
+def run_analysis(store: JobStore, job: Job, roi: Roi, params: AnalyzeParams) -> None:
+    store.update(job, status=Status.ANALYZING, stage="scan", progress=0.0, error=None)
+    pages = analyze(
+        job.dir / job.video,
+        roi.clamp(job.width, job.height),
+        params,
+        lambda stage, frac: store.update(job, stage=stage, progress=frac),
+    )
+    pages_dir = job.dir / "pages"
+    pages_dir.mkdir(exist_ok=True)
+    meta = []
+    for i, page in enumerate(pages):
+        name = f"pages/{i:03d}.png"
+        cv2.imwrite(str(job.dir / name), page.image)
+        meta.append(
+            {
+                "id": i,
+                "file": name,
+                "start": page.start,
+                "end": page.end,
+                "duplicate_of": page.duplicate_of,
+            }
+        )
+    store.update(job, pages=meta, status=Status.READY_FOR_REVIEW, stage="", progress=1.0)
+
+
+def export(job: Job, order: list[int], fmt: str) -> str:
+    by_id = {p["id"]: p for p in job.pages}
+    images = [cv2.imread(str(job.dir / by_id[i]["file"])) for i in order if i in by_id]
+    if not images:
+        raise ValueError("没有选中任何页面")
+    name = f"tab.{fmt}"
+    (export_png if fmt == "png" else export_pdf)(images, job.dir / name)
+    return name
