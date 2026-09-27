@@ -59,6 +59,16 @@ def test_page_switch_pages_with_aligned_bar_lines_pass_through(notes):
     assert all(a is b for a, b in zip(stitch_pages(pages), pages, strict=True))
 
 
+@pytest.mark.parametrize("notes", [5, 2])
+def test_riff_repeated_across_page_turn_is_ambiguous_not_an_overlap(notes):
+    # A page turn inside a repeated riff A: shifts of one and of two measures match
+    # almost equally well, so the true alignment cannot be told and nothing is joined.
+    images = [render_tab_page([5, 6, 1, 1], notes), render_tab_page([1, 1, 7, 8], notes)]
+    assert overlap_shift(*images)[1] < OVERLAP_THRESHOLD
+    pages = as_pages(images)
+    assert all(a is b for a, b in zip(stitch_pages(pages), pages, strict=True))
+
+
 def test_find_bars_on_strip():
     bars = find_bars(render_scroll_strip())
     assert len(bars) == len(scroll_bar_xs())

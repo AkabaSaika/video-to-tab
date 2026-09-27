@@ -17,6 +17,8 @@ INK_LEVEL = 140  # darker than this is ink; white and the yellow highlight are b
 MIN_SHIFT = 50
 MIN_OVERLAP = 200
 OVERLAP_THRESHOLD = 0.35
+PEAK_EXCLUSION = 40  # px around the best shift that belong to the same peak
+PEAK_MARGIN = 0.15  # best must beat any other peak by this much (real video: >= 0.33)
 BAR_COVERAGE = 0.9
 BAR_MERGE_GAP = 12  # px; the two strokes of a double bar line become one
 BAR_MARGIN = 3  # px kept left of a bar line so each measure starts with its bar
@@ -37,19 +39,28 @@ def ink_mask(img: np.ndarray) -> np.ndarray:
 
 
 def overlap_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, float]:
-    """Best shift s where b's left part repeats a from column s, with its IoU score."""
+    """Best shift s where b's left part repeats a from column s, with its IoU score.
+
+    The score is 0.0 when another peak, more than PEAK_EXCLUSION px away, comes within
+    PEAK_MARGIN of the best one: a riff repeated across a page turn matches at several
+    shifts and the true one cannot be told, so such pages are not treated as overlapping.
+    """
     if a.shape != b.shape:
         return 0, 0.0
     ma, mb = ink_mask(a), ink_mask(b)
     width = ma.shape[1]
-    best = (0, 0.0)
+    scores = []
     for s in range(MIN_SHIFT, width - MIN_OVERLAP + 1):
         x, y = ma[:, s:], mb[:, : width - s]
         union = np.count_nonzero(x | y)
-        score = np.count_nonzero(x & y) / union if union else 0.0
-        if score > best[1]:
-            best = (s, score)
-    return best
+        scores.append(np.count_nonzero(x & y) / union if union else 0.0)
+    if not scores:
+        return 0, 0.0
+    best = int(np.argmax(scores))
+    far = [v for i, v in enumerate(scores) if abs(i - best) > PEAK_EXCLUSION]
+    if far and scores[best] - max(far) < PEAK_MARGIN:
+        return MIN_SHIFT + best, 0.0
+    return MIN_SHIFT + best, float(scores[best])
 
 
 def find_bars(strip: np.ndarray) -> list[int]:
