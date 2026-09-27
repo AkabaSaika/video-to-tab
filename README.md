@@ -2,7 +2,11 @@
 
 把吉他演奏视频下方逐页切换的 tab 谱提取出来，去掉播放光标，拼接成完整的长图 / PDF。
 
-## 安装
+## 下载可直接运行版
+
+在 [Releases](https://github.com/AkabaSaika/video-to-tab/releases) 下载对应系统的 zip，解压后运行 `video-to-tab`（Windows 为 `video-to-tab.exe`），会自动打开浏览器，无需安装任何依赖。
+
+## 从源码安装
 
 需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)、Node 20+。
 
@@ -29,3 +33,10 @@
     cd backend && uv run uvicorn app.main:app --reload --port 8000
     cd frontend && npm run dev             # http://localhost:5173，/api 代理到 8000
     cd frontend && npm test
+
+## 打包
+
+    cd frontend && npm ci && npm run build
+    cd ../backend && uv sync --group build && uv run --group build python ../packaging/build.py v0.01
+
+生成 `build-release/video-to-tab-<版本>-<系统>.zip`。推送 `v*` 标签后，GitHub Actions（`.github/workflows/release.yml`）会在 Windows / macOS / Linux 上分别打包并发布到 Releases。
