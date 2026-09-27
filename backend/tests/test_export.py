@@ -1,6 +1,7 @@
 import re
 
 import numpy as np
+import pytest
 
 from app.export import GAP, export_pdf, export_png, paginate, stitch_vertical
 
@@ -30,3 +31,16 @@ def test_export_files(tmp_path):
     data = pdf.read_bytes()
     assert data.startswith(b"%PDF")
     assert len(re.findall(rb"/Type\s*/Page(?!s)", data)) == 3
+
+
+def test_empty_input_raises_chinese_error(tmp_path):
+    for fn in (stitch_vertical, paginate):
+        with pytest.raises(ValueError, match="没有可导出的页面"):
+            fn([])
+    with pytest.raises(ValueError, match="没有可导出的页面"):
+        export_pdf([], tmp_path / "t.pdf")
+
+
+def test_export_png_reports_write_failure(tmp_path):
+    with pytest.raises(OSError, match="无法写入文件"):
+        export_png([img(10, 50)], tmp_path / "missing_dir" / "t.png")
