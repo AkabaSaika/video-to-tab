@@ -131,7 +131,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404, "文件不存在")
         return FileResponse(path)
 
-    dist = REPO_ROOT / "frontend" / "dist"
+    dist = Path(os.environ.get("VTT_FRONTEND_DIR", REPO_ROOT / "frontend" / "dist"))
     if dist.is_dir():
         app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
     return app
