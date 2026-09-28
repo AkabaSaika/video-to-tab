@@ -145,7 +145,13 @@ def read_rhythm(
     # tuplet numbers below the stems' ends
     if stems:
         lowest = max(b for _, _, b in stems)
-        cand = [b for b in blobs if b.y > lowest + 0.05 * s and 0.3 * s <= b.h <= 1.0 * s]
+        cand = [
+            b
+            for b in blobs
+            if b.y > lowest + 0.05 * s
+            and 0.3 * s <= b.h <= 1.0 * s
+            and span[0] <= b.cx <= span[1]  # a tuplet number belongs to its own measure
+        ]
         if cand:
             labels = clf.classify(cand, s)
             for b, (lab, conf) in zip(cand, labels, strict=True):

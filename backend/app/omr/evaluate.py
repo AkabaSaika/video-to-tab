@@ -95,6 +95,7 @@ class Report:
     grouped: int = 0
     timed: int = 0
     measures_sum_ok: int = 0
+    extra_measures: int = 0  # recognized measures with no ground-truth counterpart
     fret_errors: Counter = field(default_factory=Counter)
     group_errors: Counter = field(default_factory=Counter)
     time_errors: Counter = field(default_factory=Counter)
@@ -113,6 +114,7 @@ class Report:
             "beat_grouping": pct(self.grouped, self.beats),
             "duration_on_grouped": pct(self.timed, self.grouped),
             "measures_summing": pct(self.measures_sum_ok, self.found),
+            "extra_measures": self.extra_measures,
             "counts": {"notes": self.notes, "beats": self.beats},
             "fret_errors": dict(self.fret_errors.most_common()),
             "group_errors": dict(self.group_errors.most_common()),
@@ -215,6 +217,15 @@ def compare(gt: Score, rec: Score, lo: int, hi: int) -> Report:
                 rm.line if rm else None,
             )
         )
+    # phantom measures: recognized inside the window or past the ground truth's end, but
+    # absent from it; their notes count against precision
+    gt_numbers = {m.number for m in gt.measures}
+    last = max(gt_numbers, default=hi)
+    for m in rec.measures:
+        if m.number in gt_numbers or not (lo <= (m.number or lo) <= hi or (m.number or 0) > last):
+            continue
+        rep.extra_measures += 1
+        rep.rec_notes += sum(len(b.notes) for b in m.beats)
     return rep
 
 

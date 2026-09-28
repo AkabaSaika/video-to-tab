@@ -111,14 +111,20 @@ def pick_staff(gray: np.ndarray, strings: int | None = None) -> Staff | None:
     return max(found, key=lambda st: (len(st.lines), -np.std(np.diff(st.lines)), st.lines[0]))
 
 
-def find_bar_lines(gray: np.ndarray, staff: Staff) -> list[int]:
-    """Like stitch.find_bars, but for a given staff."""
+def bar_extents(gray: np.ndarray, staff: Staff) -> list[tuple[int, int]]:
+    """(first, last) column of each bar line, a double or final bar counting as one
+    (Guitar Pro's final bar is a thin line, a gap and a thick line)."""
     dark = gray[staff.lines[0] : staff.lines[-1] + 1] < INK_LEVEL
     cols = np.flatnonzero(dark.mean(axis=0) >= BAR_COVERAGE)
     if cols.size == 0:
         return []
     groups = np.split(cols, np.flatnonzero(np.diff(cols) > BAR_MERGE_GAP) + 1)
-    return [int(g[0]) for g in groups]
+    return [(int(g[0]), int(g[-1])) for g in groups]
+
+
+def find_bar_lines(gray: np.ndarray, staff: Staff) -> list[int]:
+    """Like stitch.find_bars, but for a given staff."""
+    return [a for a, _ in bar_extents(gray, staff)]
 
 
 def _is_enclosure(b: Blob, others: list[Blob], s: float) -> bool:
@@ -175,15 +181,18 @@ def _string_of(cy: float, lines: list[int], s: float) -> int | None:
     return len(lines) - 1 - i
 
 
-def staff_glyphs(ink: np.ndarray, staff: Staff, bars: list[int], clf: GlyphClassifier):
-    """Classified glyphs inside the staff band plus the enclosure (circle) blobs."""
+def staff_glyphs(ink: np.ndarray, staff: Staff, bars: list[tuple[int, int]], clf: GlyphClassifier):
+    """Classified glyphs inside the staff band plus the enclosure (circle) blobs.
+    `bars` are bar-line extents; glyphs left or right of the staff's lines (a track label
+    such as "Gt.1") are not notes, because a fret number always sits on a string."""
     s = staff.spacing
     y0, y1 = staff_band(staff)
     y0, y1 = max(0, y0), min(ink.shape[0], y1)
     band = ink[y0:y1].copy()
-    for b in bars:  # bar lines are not glyphs
-        band[:, max(0, b - 2) : b + 5] = 0
+    for a, b in bars:  # bar lines are not glyphs; blank the whole (double/final) bar
+        band[:, max(0, a - 2) : b + 5] = 0
     blobs = components(band, min_area=4)
+    blobs = [b for b in blobs if staff.x0 - 0.5 * s <= b.cx <= staff.x1 + 0.5 * s]
     for b in blobs:
         b.y += y0
     circles = [b for b in blobs if _is_enclosure(b, blobs, s)]
@@ -391,9 +400,10 @@ def recognize_line(
     if staff is None:
         return None
     s = staff.spacing
-    bars = find_bar_lines(gray, staff)
+    extents = bar_extents(gray, staff)
+    bars = [a for a, _ in extents]
     ink = staff_ink(gray, s, staff.lines)
-    glyphs, circles = staff_glyphs(ink, staff, bars, clf)
+    glyphs, circles = staff_glyphs(ink, staff, extents, clf)
     frets = frets_from_glyphs(glyphs, circles, staff)
     rests = rests_from_glyphs(glyphs, frets, staff)
     raw_ink = (gray < INK_LEVEL).astype(np.uint8)
