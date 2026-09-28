@@ -40,3 +40,13 @@
     cd ../backend && uv sync --group build && uv run --group build python ../packaging/build.py v0.01
 
 生成 `build-release/video-to-tab-<版本>-<系统>.zip`。推送 `v*` 标签后，GitHub Actions（`.github/workflows/release.yml`）会在 Windows / macOS / Linux 上分别打包并发布到 Releases。
+
+## 识谱（实验中）
+
+把截图拼接得到的 tab 行图识别成结构化乐谱（弦、品格、休止、时值），并可以用 Guitar Pro 文件评测准确率：
+
+    cd backend
+    uv run python -m app.omr.evaluate VIDEO_OR_PAGE_DIR 谱.gp --track "声部名" [--from 13 --to 148]
+    uv run python -m app.omr.train --per-class 2000   # 重新训练字形分类器（约 3 分钟）
+
+识别结果是 `app.omr.model.Score`（可转为 JSON），后续用于识谱界面和导出 .gp。
