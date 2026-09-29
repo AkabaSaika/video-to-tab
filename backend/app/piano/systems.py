@@ -9,12 +9,15 @@ import numpy as np
 
 from app.region import Staff
 
-PAD = 4.0  # staff spaces kept above and below a system for ledger notes, stems, dynamics
+PAD = 4.0  # staff spaces kept above and below a system at least (stems, dynamics)
+MARGIN = 2.0  # staff spaces between a system's staves and the frame edge, at least
+REACH_GAP = 1.25  # staff spaces: blank rows that end a system's notation above/below
 MAX_GAP = 12.0  # staff spaces between the two staves of one system, at most
 CONNECT = 0.9  # share of the gap rows a bar line must cover to join two staves
 RUN = 0.08  # a staff line is a horizontal ink run at least this share of the frame width
-COVER = 0.55  # ... and its row is covered by such runs at least this much, relative to the
-# best covered row (the staff lines); beams lying along a line cover less
+COVER = 0.55  # ... and its row is covered by such runs at least this much, relative to
+# the best covered row nearby (the other lines); beams lying along a line cover less
+MIN_COVER = 0.12  # ... and at least this share of the frame width
 
 
 @dataclass
@@ -48,25 +51,43 @@ def find_staves(gray: np.ndarray) -> list[Staff]:
         _ink(gray), cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1))
     )
     cover = runs.mean(axis=1)
-    rows = np.flatnonzero(cover >= max(0.15, COVER * cover.max()))
+    size = 2 * max(8, h // 25) + 1
+    near = cv2.dilate(
+        cover.astype(np.float32)[:, None], cv2.getStructuringElement(cv2.MORPH_RECT, (1, size))
+    )[:, 0]
+    rows = np.flatnonzero((cover >= COVER * near) & (cover >= MIN_COVER))
     if rows.size == 0:
         return []
     groups = np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1)
     lines = [float(g.mean()) for g in groups]
+    strength = [float(cover[g].max()) for g in groups]
+
+    def staff_at(i: int) -> Staff | None:
+        if i + 5 > len(lines):
+            return None
+        gaps = np.diff(lines[i : i + 5])
+        if gaps.min() < 4 or gaps.std() > 0.15 * gaps.mean() + 0.5:
+            return None
+        on = np.mean([runs[g].any(axis=0) for g in groups[i : i + 5]], axis=0) >= 0.6
+        cols = np.flatnonzero(on)
+        if cols.size < MIN_COVER * w:
+            return None
+        return Staff([int(round(y)) for y in lines[i : i + 5]], int(cols[0]), int(cols[-1]))
+
     staves = []
     i = 0
     while i + 5 <= len(lines):
-        ys = lines[i : i + 5]
-        gaps = np.diff(ys)
-        if gaps.min() >= 4 and gaps.std() <= 0.15 * gaps.mean() + 0.5:
-            band = [runs[g] for g in groups[i : i + 5]]
-            on = np.mean([b.any(axis=0) for b in band], axis=0) >= 0.6
-            cols = np.flatnonzero(on)
-            if cols.size >= 0.2 * w:
-                staves.append(Staff([int(round(y)) for y in ys], int(cols[0]), int(cols[-1])))
-                i += 5
-                continue
-        i += 1
+        st = staff_at(i)
+        if st is None:
+            i += 1
+            continue
+        # a beam or ledger line one space off a staff can make a second, shifted staff:
+        # keep the one with the stronger lines
+        nxt = staff_at(i + 1)
+        if nxt is not None and min(strength[i + 1 : i + 6]) > min(strength[i : i + 5]):
+            st, i = nxt, i + 1
+        staves.append(st)
+        i += 5
     return staves
 
 
@@ -99,27 +120,53 @@ def _pairs(gray: np.ndarray, staves: list[Staff]) -> list[tuple[Staff, Staff]]:
     return pairs
 
 
+def _reach(rows: np.ndarray, start: int, step: int, limit: int, gap: int) -> tuple[int, bool]:
+    """Follow notation rows from staff line `start` outwards (step -1 up, +1 down) until
+    `gap` blank rows or `limit`. Returns the last notation row and whether the notation
+    was still going on at `limit`."""
+    last = start
+    r = start + step
+    while r != limit:
+        if rows[r]:
+            last = r
+        elif abs(r - last) > gap:
+            return last, False
+        r += step
+    return last, True
+
+
 def find_systems(frame: np.ndarray, pad: float = PAD) -> list[System]:
-    """Whole systems, top to bottom. A system whose staves plus `pad` staff spaces above
-    and below do not fit in the frame is dropped: it may be cut off."""
+    """Whole systems, top to bottom, each cropped with its notation above and below (at
+    least `pad` staff spaces where there is room). A system whose notation runs into the
+    frame edge, or that sits closer than MARGIN staff spaces to it, may be cut off and is
+    dropped. A neighbouring system's notation is cut off halfway between the two."""
     gray = _gray(frame)
     h, w = gray.shape
     staves = find_staves(gray)
     pairs = _pairs(gray, staves)
+    ink = _ink(gray)
     found = []
     for a, b in pairs:
         s = (a.spacing + b.spacing) / 2
         top, bottom = a.lines[0], b.lines[-1]
-        need = int(round(pad * s))
-        if top - need < 0 or bottom + need >= h:
+        if top - MARGIN * s < 0 or bottom + MARGIN * s >= h:
             continue
-        # stop halfway to a neighbouring staff so its notes stay out of the crop
+        sx0, sx1 = min(a.x0, b.x0), max(a.x1, b.x1)
+        rows = (ink[:, sx0 : sx1 + 1].sum(axis=1) >= 3).astype(bool)
         above = [st.lines[-1] for st in staves if st.lines[-1] < top]
         below = [st.lines[0] for st in staves if st.lines[0] > bottom]
-        y0 = max(top - need, (top + max(above)) // 2 if above else 0)
-        y1 = min(bottom + need, (bottom + min(below)) // 2 if below else h)
-        x0 = max(0, int(min(a.x0, b.x0) - 3 * s))  # the brace sits left of the staves
-        x1 = min(w, int(max(a.x1, b.x1) + s))
+        up_limit = (top + max(above)) // 2 if above else -1
+        down_limit = (bottom + min(below)) // 2 if below else h
+        gap = int(round(REACH_GAP * s))
+        first, open_up = _reach(rows, top, -1, up_limit, gap)
+        last, open_down = _reach(rows, bottom, 1, down_limit, gap)
+        if (open_up and not above) or (open_down and not below):
+            continue  # notation runs off the frame
+        margin = int(round(s / 2))
+        y0 = max(up_limit + 1, min(first - margin, top - int(round(pad * s))))
+        y1 = min(down_limit, max(last + margin, bottom + int(round(pad * s))) + 1)
+        x0 = max(0, int(sx0 - 3 * s))  # the brace sits left of the staves
+        x1 = min(w, int(sx1 + s))
         crop = frame[y0:y1, x0:x1]
         if crop.ndim == 2:
             crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
