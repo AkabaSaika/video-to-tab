@@ -1,6 +1,7 @@
 <script setup>
 // Edit panel for one beat of one track (`score` is that track): the measure's source
-// image, one fret box and a tie ("延音") toggle per string,
+// image, one fret box and a tie ("延音") toggle per string, the playing techniques of
+// the selected string (推弦/滑音/击勾弦/泛音/颤音) and of the beat (顿音/闷音),
 // duration / dot / triplet / rest, insert / delete / confirm, and the measure-fill check.
 import { computed, ref, watch } from 'vue'
 import { api } from '../api.js'
@@ -14,6 +15,8 @@ import {
   measureFill,
   setDuration,
   setFret,
+  setTechnique,
+  toggleBeatTechnique,
   toggleDot,
   toggleRest,
   toggleTie,
@@ -43,14 +46,55 @@ const CROP_WIDTH = 320 // px shown in the panel
 const CROP_HEIGHT = 220 // max px
 const PAD = 12 // source px kept on both sides of the measure
 
+// [value, label] choices of the per-string techniques ('' = none)
+const BENDS = [
+  ['', '—'],
+  [1, '½'],
+  [2, '全音'],
+  [3, '1½'],
+  [4, '2'],
+]
+const SLIDES = [
+  ['', '—'],
+  ['legato', '连滑'],
+  ['shift', '移滑'],
+  ['out_down', '滑出↘'],
+  ['out_up', '滑出↗'],
+  ['in:below', '滑入↗'],
+  ['in:above', '滑入↘'],
+]
+const HARMONICS = [
+  ['', '—'],
+  ['natural', '自然'],
+  ['artificial', '人工'],
+  ['pinch', '拨弦'],
+  ['tap', '点弦'],
+  ['semi', '半'],
+  ['feedback', '反馈'],
+]
+
 const measure = computed(() => props.score.measures[props.m])
 const beat = computed(() => measure.value.beats[props.b] ?? null)
 const invalid = ref({}) // string -> text the user typed that is not a fret
+
+const picked = ref(null) // string whose techniques are shown
 
 watch(
   () => [props.m, props.b],
   () => (invalid.value = {}),
 )
+
+// technique badges shown on a string's row
+function badges(note) {
+  if (!note) return ''
+  const out = []
+  if (note.bend) out.push(note.bend_release ? '推放' : '推')
+  if (note.slide || note.slide_in) out.push('滑')
+  if (note.hopo) out.push('H/P')
+  if (note.harmonic) out.push('泛')
+  if (note.vibrato) out.push('颤')
+  return out.join(' ')
+}
 
 // strings listed from the highest (top line of the tab) down
 const strings = computed(() => {
@@ -65,10 +109,56 @@ const strings = computed(() => {
       low: note && note.confidence < 0.7,
       tied: !!note?.tied,
       canTie: !!note && !note.dead,
+      badges: badges(note),
     })
   }
   return out
 })
+
+// the selected string's note, else the beat's top note
+const tech = computed(() => {
+  const notes = beat.value?.notes ?? []
+  const note = notes.find((n) => n.string === picked.value) ?? notes[notes.length - 1]
+  if (!note) return null
+  return {
+    string: note.string,
+    label: `${props.score.strings - note.string} 弦`,
+    bend: note.bend ?? '',
+    release: !!note.bend_release,
+    slide: note.slide_in ? `in:${note.slide_in}` : (note.slide ?? ''),
+    hopo: !!note.hopo,
+    harmonic: note.harmonic ?? '',
+    vibrato: !!note.vibrato,
+  }
+})
+
+const beatMarks = computed(() => {
+  const notes = beat.value?.notes ?? []
+  const all = (name) => notes.length > 0 && notes.every((n) => n[name])
+  return { staccato: all('staccato'), palm_mute: all('palm_mute'), any: notes.length > 0 }
+})
+
+function setTech(name, value) {
+  change(setTechnique(props.score, props.m, props.b, tech.value.string, name, value))
+}
+
+function onBend(event) {
+  const v = event.target.value
+  let next = setTechnique(props.score, props.m, props.b, tech.value.string, 'bend', v ? Number(v) : null)
+  if (!v) next = setTechnique(next, props.m, props.b, tech.value.string, 'bend_release', false)
+  change(next)
+}
+
+// one menu for slides out of and into the note
+function onSlide(event) {
+  const v = event.target.value
+  const s = tech.value.string
+  let next = setTechnique(props.score, props.m, props.b, s, 'slide', null)
+  next = setTechnique(next, props.m, props.b, s, 'slide_in', null)
+  if (v.startsWith('in:')) next = setTechnique(next, props.m, props.b, s, 'slide_in', v.slice(3))
+  else if (v) next = setTechnique(next, props.m, props.b, s, 'slide', v)
+  change(next)
+}
 
 // ------------------------------------------------------------------ source image crop
 
@@ -187,6 +277,7 @@ const fill = computed(() => {
             :value="invalid[s.string] ?? s.value"
             :class="{ bad: s.string in invalid }"
             @change="onFret(s.string, $event)"
+            @focus="picked = s.string"
           />
           <button
             class="tie"
@@ -198,10 +289,71 @@ const fill = computed(() => {
           >
             延音
           </button>
+          <small class="badges">{{ s.badges }}</small>
         </label>
       </div>
       <p v-if="Object.keys(invalid).length" class="error">品格应为 0–{{ MAX_FRET }}，或 x 表示闷音</p>
-      <p class="hint">留空 = 没有音，x = 闷音；“延音”= 接着前一个同弦的音，不重新拨弦</p>
+      <p class="hint">留空 = 没有音，x = 死音（谱上的 X）；“延音”= 接着前一个同弦的音，不重新拨弦；点品格框选择要设置技巧的弦</p>
+
+      <div v-if="tech" class="tech" data-tech>
+        <div class="tech-head">技巧 · {{ tech.label }}</div>
+        <label>
+          推弦
+          <select data-bend :value="tech.bend" @change="onBend">
+            <option v-for="[v, label] in BENDS" :key="v" :value="v">{{ label }}</option>
+          </select>
+          <button
+            :class="{ on: tech.release }"
+            :disabled="!tech.bend"
+            title="推弦后放回"
+            @click="setTech('bend_release', !tech.release)"
+          >
+            放
+          </button>
+        </label>
+        <label>
+          滑音
+          <select data-slide :value="tech.slide" @change="onSlide">
+            <option v-for="[v, label] in SLIDES" :key="v" :value="v">{{ label }}</option>
+          </select>
+        </label>
+        <label>
+          泛音
+          <select
+            data-harmonic
+            :value="tech.harmonic"
+            @change="setTech('harmonic', $event.target.value || null)"
+          >
+            <option v-for="[v, label] in HARMONICS" :key="v" :value="v">{{ label }}</option>
+          </select>
+        </label>
+        <button data-hopo :class="{ on: tech.hopo }" title="击弦/勾弦到下一个同弦的音" @click="setTech('hopo', !tech.hopo)">
+          击勾弦
+        </button>
+        <button data-vibrato :class="{ on: tech.vibrato }" @click="setTech('vibrato', !tech.vibrato)">
+          颤音
+        </button>
+      </div>
+      <div class="row">
+        <button
+          data-staccato
+          :class="{ on: beatMarks.staccato }"
+          :disabled="!beatMarks.any"
+          title="整拍顿音"
+          @click="change(toggleBeatTechnique(score, m, b, 'staccato'))"
+        >
+          顿音
+        </button>
+        <button
+          data-palm-mute
+          :class="{ on: beatMarks.palm_mute }"
+          :disabled="!beatMarks.any"
+          title="整拍闷音（P.M.）"
+          @click="change(toggleBeatTechnique(score, m, b, 'palm_mute'))"
+        >
+          闷音 P.M.
+        </button>
+      </div>
 
       <div class="row">
         <button
@@ -239,6 +391,11 @@ const fill = computed(() => {
 .frets label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .frets label span { flex: 1; }
 .tie { padding: 1px 8px; font-size: 12px; }
+.badges { width: 44px; color: #2563eb; font-size: 11px; }
+.tech { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 13px; border-top: 1px solid #eee; padding-top: 6px; margin-bottom: 8px; }
+.tech-head { width: 100%; color: #444; }
+.tech label { display: flex; align-items: center; gap: 3px; }
+.tech button { padding: 1px 8px; font-size: 12px; }
 .frets input { width: 44px; text-align: center; }
 .frets .low span { background: rgba(245, 158, 11, 0.35); border-radius: 3px; padding: 0 3px; }
 .bad { border-color: #b91c1c !important; background: #fee2e2; }

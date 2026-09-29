@@ -32,9 +32,9 @@ export function setFret(score, m, b, string, value) {
   return updateBeat(score, m, b, (beat) => {
     const old = beat.notes.find((n) => n.string === string)
     let note = null
-    if (value === 'x') note = { string, fret: 0, confidence: 1, dead: true, tied: false }
+    if (value === 'x') note = { ...old, string, fret: 0, confidence: 1, dead: true, tied: false }
     else if (value !== null) {
-      note = { string, fret: value, confidence: 1, dead: false, tied: !!old?.tied }
+      note = { ...old, string, fret: value, confidence: 1, dead: false, tied: !!old?.tied }
     }
     const notes = beat.notes.filter((n) => n.string !== string)
     if (note) notes.push(note)
@@ -51,6 +51,60 @@ export function toggleTie(score, m, b, string) {
   return updateBeat(score, m, b, (bt) => ({
     ...bt,
     notes: bt.notes.map((n) => (n.string === string ? { ...n, tied: !n.tied } : n)),
+  }))
+}
+
+// ---------------------------------------------------------------- playing techniques
+
+const isBool = (v) => typeof v === 'boolean'
+const oneOf = (...choices) => (v) => v === null || choices.includes(v)
+const amount = (v) => v === null || (typeof v === 'number' && v > 0 && v <= 12)
+// name -> valid values (null or false clears it); see Note in backend app/omr/model.py
+export const TECHNIQUES = {
+  bend: amount, // semitones: 1 = ½, 2 = full, 3 = 1½
+  bend_release: isBool,
+  slide: oneOf('shift', 'legato', 'out_down', 'out_up'),
+  slide_in: oneOf('below', 'above'),
+  hopo: isBool,
+  harmonic: oneOf('natural', 'artificial', 'pinch', 'tap', 'semi', 'feedback'),
+  harmonic_fret: (v) => v === null || (typeof v === 'number' && v >= 0 && v <= 36),
+  vibrato: isBool,
+  palm_mute: isBool,
+  staccato: isBool,
+}
+export const BEAT_TECHNIQUES = ['palm_mute', 'staccato']
+
+// Set one technique of the note on `string`; without a note there, nothing changes.
+// A harmonic gets a fret if it has none (natural: the note's own fret, else 12 = an
+// octave up); clearing the harmonic clears its fret.
+export function setTechnique(score, m, b, string, name, value) {
+  if (!TECHNIQUES[name]) throw new RangeError(`未知的技巧：${name}`)
+  if (!TECHNIQUES[name](value)) throw new RangeError(`技巧 ${name} 的值无效：${value}`)
+  const beat = score.measures[m]?.beats[b]
+  if (!beat?.notes.some((n) => n.string === string)) return score
+  return updateBeat(score, m, b, (bt) => ({
+    ...bt,
+    notes: bt.notes.map((n) => {
+      if (n.string !== string) return n
+      const out = { ...n, [name]: value }
+      if (name === 'harmonic') {
+        out.harmonic_fret = value === null ? null : (n.harmonic_fret ?? (value === 'natural' ? n.fret : 12))
+      }
+      return out
+    }),
+  }))
+}
+
+// Beat-level marks (palm mute, staccato) live on every note of the beat: mark them all,
+// or clear them all when all are already marked.
+export function toggleBeatTechnique(score, m, b, name) {
+  if (!BEAT_TECHNIQUES.includes(name)) throw new RangeError(`不是整拍的技巧：${name}`)
+  const beat = score.measures[m]?.beats[b]
+  if (!beat?.notes.length) return score
+  const on = !beat.notes.every((n) => n[name])
+  return updateBeat(score, m, b, (bt) => ({
+    ...bt,
+    notes: bt.notes.map((n) => ({ ...n, [name]: on })),
   }))
 }
 

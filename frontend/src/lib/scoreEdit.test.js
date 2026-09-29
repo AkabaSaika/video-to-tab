@@ -9,6 +9,8 @@ import {
   nextToReview,
   setDuration,
   setFret,
+  setTechnique,
+  toggleBeatTechnique,
   toggleDot,
   toggleRest,
   toggleTie,
@@ -200,5 +202,73 @@ describe('scoreEdit', () => {
     expect(nextToReview(s, { m: 0, b: 3 })).toEqual({ m: 1, b: 0 })
     const clean = confirmBeat(confirmBeat(s, 1, 0), 2, 0)
     expect(nextToReview(clean, null)).toBeNull()
+  })
+})
+
+describe('techniques', () => {
+  it('setTechnique sets and clears one technique of the note on a string', () => {
+    const s = frozen()
+    const t = setTechnique(s, 0, 1, 2, 'bend', 2)
+    expect(t.measures[0].beats[1].notes[1]).toMatchObject({ string: 2, fret: 7, bend: 2 })
+    expect(t.measures[0].beats[1].notes[0].bend).toBeUndefined()
+    expect(t.measures[0].beats[0]).toBe(s.measures[0].beats[0])
+    expect(setTechnique(t, 0, 1, 2, 'bend', null).measures[0].beats[1].notes[1].bend).toBe(null)
+    const all = [
+      ['bend_release', true],
+      ['slide', 'legato'],
+      ['slide_in', 'below'],
+      ['hopo', true],
+      ['harmonic', 'natural'],
+      ['harmonic_fret', 12],
+      ['vibrato', true],
+      ['palm_mute', true],
+      ['staccato', true],
+    ]
+    for (const [name, value] of all) {
+      expect(setTechnique(s, 0, 1, 1, name, value).measures[0].beats[1].notes[0][name]).toBe(value)
+    }
+    expect(setTechnique(s, 0, 1, 4, 'hopo', true)).toEqual(s) // no note on that string
+    expect(s).toEqual(sample())
+  })
+
+  it('setTechnique rejects unknown techniques and values', () => {
+    const s = sample()
+    expect(() => setTechnique(s, 0, 1, 1, 'tapping', true)).toThrow(RangeError)
+    expect(() => setTechnique(s, 0, 1, 1, 'slide', 'sideways')).toThrow(RangeError)
+    expect(() => setTechnique(s, 0, 1, 1, 'harmonic', 'loud')).toThrow(RangeError)
+    expect(() => setTechnique(s, 0, 1, 1, 'bend', -1)).toThrow(RangeError)
+    expect(() => setTechnique(s, 0, 1, 1, 'hopo', 'yes')).toThrow(RangeError)
+  })
+
+  it('a harmonic without a fret gets one; clearing it clears the fret', () => {
+    const s = sample()
+    const h = setTechnique(s, 0, 1, 2, 'harmonic', 'natural')
+    expect(h.measures[0].beats[1].notes[1]).toMatchObject({ harmonic: 'natural', harmonic_fret: 7 })
+    const a = setTechnique(s, 0, 1, 2, 'harmonic', 'artificial')
+    expect(a.measures[0].beats[1].notes[1].harmonic_fret).toBe(12)
+    const off = setTechnique(a, 0, 1, 2, 'harmonic', null).measures[0].beats[1].notes[1]
+    expect([off.harmonic, off.harmonic_fret]).toEqual([null, null])
+  })
+
+  it('toggleBeatTechnique marks every note of the beat, or clears them all', () => {
+    const s = frozen()
+    const pm = toggleBeatTechnique(s, 0, 1, 'palm_mute')
+    expect(pm.measures[0].beats[1].notes.map((n) => n.palm_mute)).toEqual([true, true])
+    const off = toggleBeatTechnique(pm, 0, 1, 'palm_mute')
+    expect(off.measures[0].beats[1].notes.map((n) => n.palm_mute)).toEqual([false, false])
+    const half = setTechnique(s, 0, 1, 1, 'staccato', true)
+    const st = toggleBeatTechnique(half, 0, 1, 'staccato') // partly marked: mark all
+    expect(st.measures[0].beats[1].notes.map((n) => n.staccato)).toEqual([true, true])
+    expect(() => toggleBeatTechnique(s, 0, 1, 'bend')).toThrow(RangeError)
+    expect(toggleBeatTechnique(s, 0, 2, 'palm_mute')).toEqual(s) // a rest has no notes
+    expect(s).toEqual(sample())
+  })
+
+  it('changing the fret keeps the techniques', () => {
+    const t = setTechnique(sample(), 0, 1, 2, 'vibrato', true)
+    expect(setFret(t, 0, 1, 2, 9).measures[0].beats[1].notes[1]).toMatchObject({
+      fret: 9,
+      vibrato: true,
+    })
   })
 })
