@@ -1,6 +1,7 @@
 # video-to-tab
 
 把吉他演奏视频下方逐页切换的 tab 谱提取出来，去掉播放光标，拼接成完整的长图 / PDF。
+也可以识别钢琴演奏视频里的五线谱（大谱表），导出 MusicXML（见“钢琴谱”）。
 
 ## 下载可直接运行版
 
@@ -11,6 +12,7 @@
 需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)、Node 20+。
 
     cd backend && uv sync
+    uv run python -m app.piano.engine --download   # 钢琴谱识别模型（约 160 MB，只需一次）
     cd ../frontend && npm install && npm run build
 
 不需要系统 ffmpeg：PyAV 自带解码库，yt-dlp 只下载无需合并的视频流。
@@ -39,7 +41,7 @@
     cd frontend && npm ci && npm run build
     cd ../backend && uv sync --group build && uv run --group build python ../packaging/build.py v0.01
 
-生成 `build-release/video-to-tab-<版本>-<系统>.zip`。推送 `v*` 标签后，GitHub Actions（`.github/workflows/release.yml`）会在 Windows / macOS / Linux 上分别打包并发布到 Releases。
+生成 `build-release/video-to-tab-<版本>-<系统>.zip`。打包时会把钢琴谱识别模型一起放进去（缺少时先自动下载），发布版离线可用。推送 `v*` 标签后，GitHub Actions（`.github/workflows/release.yml`）会在 Windows / macOS / Linux 上分别打包并发布到 Releases。
 
 ## 识谱（实验中）
 
@@ -61,3 +63,20 @@
 - 小节编号与原谱一致：视频未出现的开头小节补为休止；中间漏识别的小节补为休止并标为待检查。
 - 演奏技巧会一并识别并导出：推弦（½ / 全音 / 1½，推放）、滑音（连滑 sl.、移滑、滑入、滑出）、击勾弦（H / P 或连线）、泛音（<12> 自然泛音、品格后的 <n> 人工泛音）、颤音（波浪线）、顿音（拍上方的点）、闷音（P.M. 及其虚线范围）。编辑面板中点某根弦的品格框后可修改该弦的推弦 / 滑音 / 击勾弦 / 泛音 / 颤音；顿音、闷音按整拍切换。
 - “导出 .gp”生成 Guitar Pro 7/8 文件。
+
+## 钢琴谱
+
+页面顶部切换到“钢琴谱”（网址 `#/piano`），上传钢琴演奏视频或粘贴链接：
+
+- 程序按约 5 帧/秒扫描视频，截取每一组完整的大谱表（高音谱表 + 低音谱表，由小节线相连）。连续滚动和整页翻页的谱面都可以；被画面边缘截断的谱表不会被截取，同一组谱表只保留最清晰的一张，按出现顺序排列。
+- 每组谱表用 [homr](https://github.com/liebharc/homr) 识别为 MusicXML，结果页左边是视频截图，右边是用 [Verovio](https://www.verovio.org)（LGPL）画出的识别结果，可逐组“删除”或“重新识别”（换一种缩放再读一次）。
+- “导出 MusicXML”把各组按顺序合并为一首曲子（一个钢琴声部、两行谱表，小节连续编号，谱号/调号/拍号不重复），可在 MuseScore 等软件中打开继续编辑。逐音符编辑不在本程序内。
+- 数据保存在 `data/piano/`（`VTT_PIANO_DATA_DIR` 可修改）。每个识别进程约占 1 GB 内存；识别一组约 2 秒（CPU）。
+
+识别模型（3 个 ONNX 文件，约 160 MB）的位置：环境变量 `VTT_HOMR_MODELS`；未设置时，发布版用程序自带的 `homr_models/`，源码运行用 `data/models/homr/`。缺少模型时第一次识别会从 homr 的 GitHub Releases 下载一次，也可以提前运行 `uv run python -m app.piano.engine --download`。没有模型时，相关测试会自动跳过。
+
+依赖说明：homr 声明需要 OpenCV < 5，但实测在本项目使用的 OpenCV 5 上正常工作，`backend/pyproject.toml` 用 uv 的 `override-dependencies` 放开了这一限制；homr 只用于识别标题的 `rapidocr` 会额外安装带界面的 OpenCV，已排除，程序里用空实现代替（不识别标题）。
+
+## 许可证
+
+本项目以 [GNU AGPL-3.0](LICENSE) 发布：钢琴谱识别使用的 homr 采用 AGPL-3.0，因此整个项目随之采用 AGPL-3.0。修改后通过网络向他人提供服务时，也需要提供对应的源代码。前端使用的 Verovio 为 LGPL-3.0，alphaTab 为 MPL-2.0。
