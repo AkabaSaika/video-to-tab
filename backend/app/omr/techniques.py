@@ -106,13 +106,29 @@ def slant(b: Blob) -> float:
     return float(np.corrcoef(xs, ys)[0, 1])
 
 
+def bow(b: Blob) -> float:
+    """Largest distance of the stroke's centre line from a straight line, over its height
+    (a slide is straight; a piece of a tie arc is bent)."""
+    m = b.mask
+    cols = [c for c in range(m.shape[1]) if m[:, c].any()]
+    if len(cols) < 3:
+        return 0.0
+    xs = np.array(cols, float)
+    ys = np.array([np.flatnonzero(m[:, c]).mean() for c in cols])
+    fit = np.polyval(np.polyfit(xs, ys, 1), xs)
+    return float(np.abs(ys - fit).max() / max(1, b.h))
+
+
 def is_diagonal(b: Blob, s: float) -> bool:
+    """A slide line: a short straight stroke at about 45 degrees (the ends of tie arcs cut
+    by a bar line or the image edge are flatter and bent)."""
     return (
         0.3 * s <= b.w <= 1.4 * s
-        and 0.25 * s <= b.h <= 1.0 * s
-        and 0.5 <= b.w / b.h <= 2.5
+        and 0.3 * s <= b.h <= 1.0 * s
+        and 0.5 <= b.w / b.h <= 1.7
         and b.mask.mean() <= 0.5
         and abs(slant(b)) >= 0.9
+        and bow(b) <= 0.1
     )
 
 
@@ -203,16 +219,24 @@ def text_runs(blobs: list[Blob], s: float) -> list[Run]:
 
 
 def is_palm_mute(r: Run, s: float) -> bool:
-    """ "P.M.": letter, dot, wider letter, dot, the dots on the letters' baseline."""
-    bl = sorted(r.blobs, key=lambda b: b.x)
-    if len(bl) != 4:
+    """ "P.M.": letter, dot, wider letter, dot, the dots on the letters' baseline. A letter
+    may come in pieces (cut by a faint seam of the stitched image); specks are ignored."""
+    bl = sorted((b for b in r.blobs if max(b.w, b.h) >= 0.12 * s), key=lambda b: b.x)
+    if len(bl) < 4 or not is_dot(bl[-1], s):
         return False
-    p, d1, m, d2 = bl
-    if not (is_letter(p, s) and is_letter(m, s) and is_dot(d1, s) and is_dot(d2, s)):
+    dots = [i for i, b in enumerate(bl) if is_dot(b, s)]
+    if len(dots) != 2 or dots[1] != len(bl) - 1 or dots[0] == 0:
         return False
-    base = max(p.y + p.h, m.y + m.h)
-    on_base = all(abs(d.y + d.h - base) <= 0.2 * s + 1 for d in (d1, d2))
-    return on_base and abs(p.h - m.h) <= 0.2 * s + 1 and m.w >= 1.1 * p.w
+    first, second = bl[: dots[0]], bl[dots[0] + 1 : -1]
+    if not second or not all(b.h >= 0.3 * s for b in first + second):
+        return False
+    p, m = Run(first), Run(second)
+    if not (0.3 * s <= p.y1 - p.y0 <= 1.2 * s and 0.2 * s <= p.x1 - p.x0 <= 1.4 * s):
+        return False
+    base = max(p.y1, m.y1)
+    on_base = all(abs(bl[i].y + bl[i].h - base) <= 0.2 * s + 1 for i in dots)
+    same = abs((p.y1 - p.y0) - (m.y1 - m.y0)) <= 0.2 * s + 1
+    return on_base and same and (m.x1 - m.x0) >= 1.1 * (p.x1 - p.x0)
 
 
 def bend_amount(label: Run | None, s: float, digit_of) -> float:
@@ -287,26 +311,40 @@ def _string_frets(frets) -> dict[int, list]:
     return out
 
 
-def palm_mutes(blobs, runs, groups, s) -> list[tuple[float, float]]:
-    """(first beat x, last x) of every P.M. extent."""
+def _extent(marks: list[Blob], x: float, cy: float, s: float) -> tuple[float, list[Blob]]:
+    """Right end of the dashes (and closing tick) that start near x on row cy."""
+    edge, end, used = x, x, []
+    for m in sorted((m for m in marks if m.x >= x - 0.2 * s), key=lambda m: m.x):
+        if abs(m.cy - cy) > 0.45 * s or m.x - edge > 1.5 * s:
+            break
+        edge = m.x + m.w
+        end = max(end, edge)
+        used.append(m)
+        if is_tick(m, s):
+            break
+    return end, used
+
+
+def palm_mutes(blobs, runs, groups, staff, s) -> list[tuple[float, float]]:
+    """(first beat x, last x) of every P.M. extent. An extent continued from the line
+    before starts with dashes at the left end of the staff, without the text."""
     out = []
     marks = [b for b in blobs if is_dash(b, s) or is_tick(b, s)]
+    taken: set[int] = set()
     for r in runs:
         if not is_palm_mute(r, s):
             continue
         start = _nearest(_notes_of(groups), r.cx, 1.2 * s)
         if start is None:
             continue
-        end = start.x
-        edge = r.x1
-        for m in sorted((m for m in marks if m.x >= r.x1), key=lambda m: m.x):
-            if abs(m.cy - r.cy) > 0.45 * s or m.x - edge > 1.5 * s:
-                break
-            edge = m.x + m.w
-            end = max(end, edge)
-            if is_tick(m, s):
-                break
-        out.append((start.x, end))
+        end, used = _extent(marks, r.x1, r.cy, s)
+        taken |= {id(m) for m in used}
+        out.append((start.x, max(start.x, end)))
+    dashes = sorted((m for m in marks if is_dash(m, s) and id(m) not in taken), key=lambda m: m.x)
+    if dashes and dashes[0].x <= staff.x0 + 2.5 * s:
+        end, used = _extent(marks, dashes[0].x, dashes[0].cy, s)
+        if len(used) >= 2:
+            out.append((staff.x0 - s, end))
     for g in groups:
         if any(a - 0.3 * s <= g.x <= b + 0.5 * s for a, b in out):
             g.marks["palm_mute"] = True
@@ -367,6 +405,8 @@ def hopo_arcs(arcs, frets, s) -> list:
     by_string = _string_frets(frets)
     out = []
     for arc in arcs:
+        if arc.h < max(3, 0.15 * s) or arc.w < 0.8 * s or bow(arc) < 0.2:
+            continue  # a bit of staff line left between numbers, not a curve
         for fs in by_string.values():
             for a, b in zip(fs, fs[1:], strict=False):
                 if a.fret == b.fret or b.tied or a.dead or b.dead:
@@ -536,7 +576,7 @@ def annotate(ink, gray, staff, frets, groups, glyphs, used, arcs, bars, top_limi
         lab, conf = clf.classify([b], s)[0]
         return int(lab) if lab in DIGITS and conf >= 0.5 else None
 
-    pm = palm_mutes(blobs, runs, groups, s)
+    pm = palm_mutes(blobs, runs, groups, staff, s)
     dots = staccato(blobs, groups, s)
     letters = hopo_letters(runs, frets, s)
     flat_above = [b for b in blobs if b.w >= 0.8 * s and b.h <= 0.7 * s and b.w >= 1.8 * b.h]
