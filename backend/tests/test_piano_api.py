@@ -150,3 +150,22 @@ def test_busy_jobs_refuse_edits(client, tmp_path):
     assert client.post(f"/api/piano/jobs/{job.id}/systems/0/recognize").status_code == 409
     # a job cut short by a restart is failed on reload
     assert PianoStore(tmp_path / "piano").get(job.id).status == "failed"
+
+
+def test_saved_system_musicxml_draws_its_accidentals(tmp_path, monkeypatch):
+    # homr writes <alter> but no <accidental>; the preview only draws the latter
+    import cv2
+    import numpy as np
+
+    store = PianoStore(tmp_path)
+    job = store.create()
+    (job.dir / "systems").mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(job.dir / "systems" / "000.png"), np.full((40, 40, 3), 255, np.uint8))
+    store.update(job, systems=[{"id": 0, "image": "systems/000.png"}])
+    sharp = system(
+        attrs() + note("D", 5).replace("<step>D</step>", "<step>D</step><alter>1</alter>")
+    )
+    monkeypatch.setattr(workflow, "recognize_image", lambda image, variant=0: sharp)
+    workflow.recognize_system(store, job, 0)
+    saved = (job.dir / "systems" / "000.musicxml").read_text(encoding="utf-8")
+    assert "<accidental>sharp</accidental>" in saved

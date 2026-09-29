@@ -11,6 +11,7 @@ import numpy as np
 from app.frames import probe
 from app.jobs import write_atomic
 from app.piano import engine
+from app.piano.accidentals import add_accidentals
 from app.piano.capture import capture
 from app.piano.jobs import PianoJob, PianoStatus, PianoStore
 from app.piano.merge import merge
@@ -47,7 +48,7 @@ def recognize_system(store: PianoStore, job: PianoJob, sid: int) -> dict:
         changes |= {"ok": False, "error": str(exc), "musicxml": None}
     else:
         name = f"systems/{sid:03d}.musicxml"
-        write_atomic(job.dir / name, xml)
+        write_atomic(job.dir / name, add_accidentals(xml))
         changes |= {"ok": True, "error": None, "musicxml": name}
     systems = [s | changes if s["id"] == sid else s for s in job.systems]
     store.update(job, systems=systems)
