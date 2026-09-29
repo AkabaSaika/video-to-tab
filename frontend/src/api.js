@@ -53,3 +53,26 @@ export const pianoApi = {
   fileUrl: (id, name) => `/api/piano/jobs/${id}/files/${name}`,
   musicxmlUrl: (id) => `/api/piano/jobs/${id}/musicxml`,
 }
+
+export const drumsApi = {
+  createFromFile(file) {
+    const form = new FormData()
+    form.append('file', file)
+    return request('POST', '/api/drums/jobs', form)
+  },
+  createFromUrl(url) {
+    const form = new FormData()
+    form.append('url', url)
+    return request('POST', '/api/drums/jobs', form)
+  },
+  listJobs: () => request('GET', '/api/drums/jobs'),
+  getJob: (id) => request('GET', `/api/drums/jobs/${id}`),
+  deletePage: (id, pid) => request('DELETE', `/api/drums/jobs/${id}/pages/${pid}`),
+  recognizePage: (id, pid) => request('POST', `/api/drums/jobs/${id}/pages/${pid}/recognize`),
+  getMapping: (id) => request('GET', `/api/drums/jobs/${id}/mapping`),
+  setMapping: (id, mapping) => request('PUT', `/api/drums/jobs/${id}/mapping`, mapping),
+  setSettings: (id, settings) => request('PUT', `/api/drums/jobs/${id}/settings`, settings),
+  fileUrl: (id, name) => `/api/drums/jobs/${id}/files/${name}`,
+  musicxmlUrl: (id) => `/api/drums/jobs/${id}/musicxml`,
+  midiUrl: (id) => `/api/drums/jobs/${id}/midi`,
+}
