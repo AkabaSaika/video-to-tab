@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from app.piano import engine
-from tests.piano_data import needs_models, system_crop
+from tests.piano_data import meta, needs_models, system_crop
 
 
 def test_model_dir_from_environment(monkeypatch, tmp_path):
@@ -55,7 +55,7 @@ def test_recognize_one_grand_staff_system():
     parts = root.findall("part")
     assert len(parts) == 1
     measures = parts[0].findall("measure")
-    assert len(measures) == 3  # K. 545 m. 1-3
+    assert len(measures) == meta()["systems"][0]["measures"]  # K. 545 m. 1-4
     assert root.find(".//attributes/staves").text == "2"
     first = _pitches(ET.tostring(measures[0], encoding="unicode"))
     assert {"C5", "E5", "G5", "C4", "G4", "E4"} <= set(first)
