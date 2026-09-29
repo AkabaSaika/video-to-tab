@@ -37,6 +37,7 @@ HIDDEN_STEM = 0.95  # min stem length (in s) for a beat without a number
 STRING_TOL = 0.33  # max distance (in s) from a digit's center to its string line
 STEM_IN_STAFF = 1.1  # min length (in s) of a thin vertical stroke that is a stem, not a digit
 NARROW_ONE = 0.45  # a digit narrower than this share of its height can only be a "1"
+HIDDEN_TIE_CONF = 0.5  # notes of a stem without numbers: tied copies of the beat before
 
 
 @dataclass
@@ -57,6 +58,7 @@ class Fret:
     conf: float
     circled: bool = False
     dead: bool = False
+    tied: bool = False  # in parentheses: continues the previous note on this string
 
 
 @dataclass
@@ -257,7 +259,8 @@ def remove_stems(ink: np.ndarray, staff: Staff, y0: int, y1: int) -> np.ndarray:
 
 
 def staff_glyphs(ink: np.ndarray, staff: Staff, bars: list[tuple[int, int]], clf: GlyphClassifier):
-    """Classified glyphs inside the staff band plus the enclosure (circle) blobs.
+    """Classified glyphs inside the staff band, the enclosure (circle) blobs and the flat
+    arc blobs (ties, slurs).
     `bars` are bar-line extents; glyphs left or right of the staff's lines (a track label
     such as "Gt.1") are not notes, because a fret number always sits on a string."""
     s = staff.spacing
@@ -274,12 +277,15 @@ def staff_glyphs(ink: np.ndarray, staff: Staff, bars: list[tuple[int, int]], clf
     rest = [b for b in blobs if b not in circles]
     for c in circles:  # digits touching the ring are part of the ring's blob
         rest += peel_ring(c, s)
-    # ties/slurs: long and flat; bar-like: tall and thin
+    # tie/slur arcs (or their pieces, cut by a bar line): flat
+    arcs = [b for b in rest if b.w >= 0.5 * s and b.h <= 0.6 * s and b.w >= 1.5 * b.h]
+    # long arcs are not glyphs; bar-like: tall and thin
     rest = [b for b in rest if not (b.w > 1.3 * s and b.h < 0.6 * s)]
     rest = [b for b in rest if not (b.h > 1.6 * s and b.w < 0.25 * s)]
     rest = merge_pieces(rest, s)
     labels = clf.classify(rest, s)
-    return [Glyph(b, lab, c) for b, (lab, c) in zip(rest, labels, strict=True)], circles
+    glyphs = [Glyph(b, lab, c) for b, (lab, c) in zip(rest, labels, strict=True)]
+    return glyphs, circles, arcs
 
 
 def _is_stem_piece(g: Glyph, digits: list[Glyph], s: float, band: tuple[int, int]) -> bool:
@@ -309,15 +315,47 @@ def _narrow_ones(glyphs: list[Glyph]) -> list[Glyph]:
     ]
 
 
-def frets_from_glyphs(glyphs: list[Glyph], circles: list[Blob], staff: Staff) -> list[Fret]:
+def _is_tied(x0: float, x1: float, cy: float, parens: list[Blob], arcs: list[Blob], s: float):
+    """Guitar Pro draws a tied note as its number in parentheses with the tie arc from the
+    previous note ending just before the "(". A number in parentheses without that arc
+    is a ghost note, not a tie."""
+
+    def covers(p: Blob) -> bool:
+        return p.y <= cy <= p.y + p.h
+
+    left = [p for p in parens if -1 <= x0 - (p.x + p.w) <= 0.4 * s and covers(p)]
+    right = [p for p in parens if -1 <= p.x - x1 <= 0.4 * s and covers(p)]
+    if not left or not right:
+        return False
+    start = min(p.x for p in left)
+    return any(
+        -0.1 * s <= start - (a.x + a.w) <= 0.8 * s and abs(a.cy - cy) <= 0.8 * s for a in arcs
+    )
+
+
+def frets_from_glyphs(
+    glyphs: list[Glyph], circles: list[Blob], staff: Staff, arcs: list[Blob] | None = None
+) -> list[Fret]:
     s = staff.spacing
     glyphs = _narrow_ones(glyphs)
     digits = [g for g in glyphs if g.label in (*DIGITS, "x") and g.conf >= MIN_DIGIT_CONF]
-    if digits:  # annotations (harmonic frets...) and specks are smaller than fret numbers
-        typical = float(np.median([g.blob.h for g in digits]))
-        digits = [g for g in digits if g.blob.h >= SMALL_DIGIT * typical]
+    typical = float(np.median([g.blob.h for g in digits])) if digits else 0.75 * s
+    # annotations (harmonic frets...) and specks are smaller than fret numbers
+    digits = [g for g in digits if g.blob.h >= SMALL_DIGIT * typical]
     band = staff_band(staff)
     digits = [g for g in digits if not _is_stem_piece(g, digits, s, band)]
+    # parentheses: classified as such, or thin and taller than the numbers (the parens of
+    # a tied chord's adjacent notes merge into one tall stroke)
+    used = {id(g) for g in digits}
+    parens = [
+        g.blob
+        for g in glyphs
+        if id(g) not in used
+        and (
+            (g.label == "paren" and g.conf >= 0.5)
+            or (g.blob.w <= 0.4 * s and g.blob.h >= 1.15 * typical)
+        )
+    ]
     digits.sort(key=lambda g: g.blob.x)
     # join neighbouring digits on the same row into multi-digit numbers
     groups: list[list[Glyph]] = []
@@ -347,7 +385,8 @@ def frets_from_glyphs(glyphs: list[Glyph], circles: list[Blob], staff: Staff) ->
         value = 0 if dead else int("".join(g.label for g in grp))
         conf = float(min(g.conf for g in grp))
         circled = any(c.x <= x0 and c.x + c.w >= x1 and c.y <= cy <= c.y + c.h for c in circles)
-        frets.append(Fret((x0 + x1) / 2, cy, x1 - x0, h, string, value, conf, circled, dead))
+        tied = _is_tied(x0, x1, cy, parens, arcs or [], s)
+        frets.append(Fret((x0 + x1) / 2, cy, x1 - x0, h, string, value, conf, circled, dead, tied))
     # one note per string per position: keep the more confident one
     frets.sort(key=lambda f: -f.conf)
     kept: list[Fret] = []
@@ -490,8 +529,8 @@ def recognize_staff(
     extents = bar_extents(gray, staff)
     bars = [a for a, _ in extents]
     ink = staff_ink(gray, s, staff.lines)
-    glyphs, circles = staff_glyphs(ink, staff, extents, clf)
-    frets = frets_from_glyphs(glyphs, circles, staff)
+    glyphs, circles, arcs = staff_glyphs(ink, staff, extents, clf)
+    frets = frets_from_glyphs(glyphs, circles, staff, arcs)
     rests = rests_from_glyphs(glyphs, frets, staff)
     raw_ink = (gray < INK_LEVEL).astype(np.uint8)
 
@@ -521,7 +560,7 @@ def recognize_staff(
         if numbers and x0 in bars:
             num, conf = read_measure_number(gray, staff, x0, clf)
         measures.append(RawMeasure(line, int(x0), int(x1), groups, marks, num, conf))
-    debug = {"glyphs": glyphs, "circles": circles, "frets": frets, "rests": rests}
+    debug = {"glyphs": glyphs, "circles": circles, "arcs": arcs, "frets": frets, "rests": rests}
     return LineResult(staff, bars, measures, debug)
 
 
@@ -599,11 +638,13 @@ def _build_track(raw: list[RawMeasure], numbers: list[int | None], strings: int)
         beats, evidence = [], []
         for g, mk in zip(m.groups, m.marks, strict=True):
             notes = [
-                Note(f.string, f.fret, round(f.conf, 3), f.dead)
+                Note(f.string, f.fret, round(f.conf, 3), f.dead, f.tied)
                 for f in sorted(g.frets, key=lambda f: f.string)
             ]
-            if g.hidden:  # tied continuation: same notes as the beat before, low confidence
-                notes = [Note(n.string, n.fret, 0.3, n.dead) for n in previous]
+            if g.hidden:  # a stem without numbers: the notes before it, held (tied)
+                notes = [
+                    Note(n.string, n.fret, HIDDEN_TIE_CONF, n.dead, not n.dead) for n in previous
+                ]
             if notes:
                 previous = notes
             beats.append(Beat(4, 0, None, g.rest is not None or not notes, notes, int(g.x)))

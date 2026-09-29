@@ -33,7 +33,9 @@ def draw_system(
     """Several tab staves stacked in one line image (Guitar Pro's multi-track system).
     Each entry of `staves` is a list of measures as in draw_line. A beat may also be:
     - TIE: a stem without a number (a tied continuation, as Guitar Pro draws it);
-    - a list holding (string, "(14)")-style frets: a parenthesized (tied) note.
+    - a list holding (string, "(14)")-style frets: a parenthesized note with a tie arc
+      coming in from the left (a tied note); "g(14)" draws the parentheses without the
+      arc (Guitar Pro's ghost note).
     With through=True the stems start right under the lowest fret number of the beat and
     run down through the staff, touching the digit."""
     beat_w, pad = 90, 30
@@ -71,12 +73,16 @@ def _draw_staff(img, top, measures, strings, stems, final_bar, label, tuplet_in,
             lowest_digit = None
             for string, fret in [] if beat == TIE else beat:
                 text = str(fret)
+                ghost = text.startswith("g")
+                text = text.removeprefix("g")
                 (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
                 y = ys[string]
+                bx_text = bx
                 if text.startswith("("):
                     bx_text = bx - cv2.getTextSize("(", cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0][0]
-                else:
-                    bx_text = bx
+                    if not ghost:  # the tie arc from the previous note ends before the "("
+                        c = (bx_text - 30, y - 6)
+                        cv2.ellipse(img, c, (20, 6), 0, 180, 360, (0, 0, 0), 2, cv2.LINE_AA)
                 cv2.rectangle(
                     img,
                     (bx_text - 2, y - th // 2 - 3),
@@ -280,3 +286,41 @@ def test_narrow_digit_read_as_four_is_a_one():
     frets = frets_from_glyphs(glyphs, [], staff)
     assert [(f.string, f.fret) for f in frets] == [(4, 15), (4, 4), (4, 1), (4, 12)]
     assert frets[-1].conf < 0.7  # still flagged for review
+
+
+def ties_of(score):
+    return [
+        [sorted((n.string, n.fret, n.tied) for n in b.notes) for b in m.beats]
+        for m in score.measures
+    ]
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
+def test_stem_without_number_is_a_tied_continuation():
+    measures = [[[(3, 5), (2, 7)], TIE, [(2, 7)], [(1, 3)]], [[(0, 3)], [(1, 5)], TIE, [(4, 2)]]]
+    score = only_track(recognize_images([draw_line(measures)]))
+    assert ties_of(score) == [
+        [
+            [(2, 7, False), (3, 5, False)],
+            [(2, 7, True), (3, 5, True)],
+            [(2, 7, False)],
+            [(1, 3, False)],
+        ],
+        [[(0, 3, False)], [(1, 5, False)], [(1, 5, True)], [(4, 2, False)]],
+    ]
+    tied = score.measures[0].beats[1]
+    assert not tied.rest and tied.duration == 4
+    assert tied.confidence < 0.7  # which notes continue is a guess: flagged for review
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
+def test_parenthesized_number_is_a_tied_note():
+    measures = [
+        [[(3, 5)], [(3, "(5)")], [(2, 12)], [(2, "(12)"), (0, 3)]],
+        [[(4, 10)], [(4, "g(10)")], [(0, 15), (1, 17)], [(5, 8)]],  # a ghost note, no arc
+    ]
+    score = only_track(recognize_images([draw_line(measures)]))
+    assert ties_of(score) == [
+        [[(3, 5, False)], [(3, 5, True)], [(2, 12, False)], [(0, 3, False), (2, 12, True)]],
+        [[(4, 10, False)], [(4, 10, False)], [(0, 15, False), (1, 17, False)], [(5, 8, False)]],
+    ]
