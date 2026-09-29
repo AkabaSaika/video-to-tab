@@ -202,3 +202,143 @@ def test_gpif_reads_tie_destinations(tmp_path):
     beats = read_track(gp, "Lead").measures[0].beats
     assert [(n.string, n.fret, n.tied) for n in beats[0].notes] == [(2, 14, False)]
     assert [(n.string, n.fret, n.tied) for n in beats[1].notes] == [(0, 3, False), (2, 14, True)]
+
+
+# ---------------------------------------------------------------- playing techniques
+
+
+def test_note_techniques_default_off_and_round_trip():
+    n = Note(0, 3)
+    assert (n.bend, n.bend_release, n.slide, n.slide_in, n.hopo) == (None, False, None, None, False)
+    assert (n.harmonic, n.harmonic_fret, n.vibrato, n.palm_mute, n.staccato) == (
+        None,
+        None,
+        False,
+        False,
+        False,
+    )
+    rich = Note(
+        3,
+        8,
+        bend=2.0,
+        bend_release=True,
+        slide="legato",
+        slide_in="below",
+        hopo=True,
+        harmonic="artificial",
+        harmonic_fret=5.0,
+        vibrato=True,
+        palm_mute=True,
+        staccato=True,
+    )
+    score = Score(7, [], None, [Measure(1, (4, 4), [Beat(4, notes=[rich])])])
+    assert Score.from_dict(score.to_dict()) == score
+
+
+@pytest.mark.parametrize(
+    ("note", "where"),
+    [
+        ({"bend": "full"}, "bend"),
+        ({"bend_release": 1}, "bend_release"),
+        ({"slide": "sideways"}, "slide"),
+        ({"slide_in": 3}, "slide_in"),
+        ({"hopo": "yes"}, "hopo"),
+        ({"harmonic": "loud"}, "harmonic"),
+        ({"harmonic_fret": "12"}, "harmonic_fret"),
+        ({"vibrato": None}, "vibrato"),
+        ({"palm_mute": 0}, "palm_mute"),
+        ({"staccato": "no"}, "staccato"),
+    ],
+)
+def test_from_dict_rejects_bad_techniques(note, where):
+    with pytest.raises(ValueError, match=re.escape(f"notes[0].{where}")):
+        Score.from_dict({"measures": [{"beats": [{"notes": [note]}]}]})
+
+
+def _prop(name, inner=""):
+    return f"<Property name='{name}'>{inner}</Property>"
+
+
+def test_gpif_reads_techniques(tmp_path):
+    """Property shapes as Guitar Pro 8 and alphaTab's Gp7Exporter write them."""
+    import zipfile
+
+    from app.omr.gpif import read_track
+
+    def note(nid, fret, props="", elems=""):
+        return (
+            f"<Note id='{nid}'>{elems}<Properties>"
+            f"<Property name='String'><String>3</String></Property>"
+            f"<Property name='Fret'><Fret>{fret}</Fret></Property>{props}</Properties></Note>"
+        )
+
+    f = "<Float>{}</Float>"
+    bend = (
+        _prop("Bended", "<Enable/>")
+        + _prop("BendOriginValue", f.format(0))
+        + _prop("BendMiddleValue", f.format(25))
+        + _prop("BendDestinationValue", f.format(50))
+    )
+    release = (
+        _prop("Bended", "<Enable/>")
+        + _prop("BendOriginValue", f.format(0))
+        + _prop("BendMiddleValue", f.format(100))
+        + _prop("BendDestinationValue", f.format(0))
+    )
+    notes = [
+        note(
+            0,
+            8,
+            bend
+            + _prop("HarmonicType", "<HType>Semi</HType>")
+            + _prop("HarmonicFret", "<HFret>5.000000</HFret>"),
+        ),
+        note(1, 5, release),
+        note(2, 5, _prop("Slide", "<Flags>18</Flags>")),  # legato out + in from below
+        note(3, 7, _prop("HopoOrigin", "<Enable/>")),
+        note(4, 5, _prop("HopoDestination", "<Enable/>")),
+        note(5, 7, _prop("PalmMuted", "<Enable/>")),
+        note(6, 7, "", "<Accent>1</Accent>"),
+        note(7, 4, "", "<Vibrato>Slight</Vibrato>"),
+        note(
+            8,
+            12,
+            _prop("Harmonic", "<Enable/>")
+            + _prop("HarmonicType", "<HType>Natural</HType>")
+            + _prop("HarmonicFret", "<HFret>12</HFret>"),
+        ),
+        note(9, 4, _prop("Slide", "<Flags>4</Flags>"), "<Accent>8</Accent>"),
+    ]
+    k = len(notes)
+    ids = range(k)
+    gp = tmp_path / "t.gp"
+    with zipfile.ZipFile(gp, "w") as z:
+        z.writestr(
+            "Content/score.gpif",
+            "<GPIF><Tracks><Track id='0'><Name>Lead</Name></Track></Tracks>"
+            "<MasterBars><MasterBar><Time>4/4</Time><Bars>0</Bars></MasterBar></MasterBars>"
+            "<Bars><Bar id='0'><Voices>0 -1 -1 -1</Voices></Bar></Bars>"
+            f"<Voices><Voice id='0'><Beats>{' '.join(map(str, range(k)))}</Beats></Voice></Voices>"
+            "<Beats>"
+            + "".join(f"<Beat id='{i}'><Rhythm ref='0'/><Notes>{i}</Notes></Beat>" for i in ids)
+            + "</Beats><Notes>"
+            + "".join(notes)
+            + "</Notes><Rhythms><Rhythm id='0'><NoteValue>16th</NoteValue></Rhythm></Rhythms>"
+            "</GPIF>",
+        )
+    got = [b.notes[0] for b in read_track(gp, "Lead").measures[0].beats]
+    assert (got[0].bend, got[0].bend_release, got[0].harmonic, got[0].harmonic_fret) == (
+        1.0,
+        False,
+        "semi",
+        5.0,
+    )
+    assert (got[1].bend, got[1].bend_release) == (2.0, True)
+    assert (got[2].slide, got[2].slide_in) == ("legato", "below")
+    assert got[3].hopo and not got[4].hopo
+    assert got[5].palm_mute and not got[4].palm_mute
+    assert got[6].staccato and not got[9].staccato  # 8 is an accent, not staccato
+    assert got[7].vibrato and not got[6].vibrato
+    assert (got[8].harmonic, got[8].harmonic_fret) == ("natural", 12.0)
+    assert (got[9].slide, got[9].slide_in) == ("out_down", None)
+    assert got[5].bend is None and got[5].slide is None and got[5].harmonic is None

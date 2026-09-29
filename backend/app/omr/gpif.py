@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from app.omr.model import Beat, Measure, Note, Score
+from app.omr.model import HARMONICS, Beat, Measure, Note, Score
 
 NOTE_VALUES = {"Whole": 1, "Half": 2, "Quarter": 4, "Eighth": 8, "16th": 16, "32nd": 32, "64th": 64}
 
@@ -49,9 +49,47 @@ def _rhythm(r: ET.Element) -> tuple[int, int, int | None]:
     return duration, dots, tuplet
 
 
+# GPIF "Slide" flags
+SLIDE_OUT_FLAGS = {1: "shift", 2: "legato", 4: "out_down", 8: "out_up"}
+SLIDE_IN_FLAGS = {16: "below", 32: "above"}
+BEND_UNIT = 50.0  # GPIF bend values: 100 = a whole tone, so 50 per semitone
+STACCATO = 1  # bit of a note's <Accent> flags
+
+
+def _float(p: dict[str, ET.Element], name: str) -> float:
+    el = p.get(name)
+    text = "".join(el.itertext()).strip() if el is not None else ""
+    return float(text) if text else 0.0
+
+
+def techniques(el: ET.Element, note: Note) -> None:
+    """Set the note's playing techniques from its GPIF <Note> element."""
+    p = _props(el)
+    if "Bended" in p:
+        points = [_float(p, f"Bend{k}Value") for k in ("Origin", "Middle", "Destination")]
+        peak = max(points)
+        if peak > 0:
+            note.bend = peak / BEND_UNIT
+            note.bend_release = points[2] < peak and points[1] >= peak
+    if "Slide" in p:
+        flags = int(_float(p, "Slide"))
+        note.slide = next((v for k, v in SLIDE_OUT_FLAGS.items() if flags & k), None)
+        note.slide_in = next((v for k, v in SLIDE_IN_FLAGS.items() if flags & k), None)
+    note.hopo = "HopoOrigin" in p
+    if "HarmonicType" in p:
+        kind = "".join(p["HarmonicType"].itertext()).strip().lower()
+        if kind in HARMONICS:
+            note.harmonic = kind
+            note.harmonic_fret = _float(p, "HarmonicFret")
+    note.palm_mute = "PalmMuted" in p
+    note.vibrato = el.find("Vibrato") is not None
+    accent = (el.findtext("Accent") or "0").strip()
+    note.staccato = accent.isdigit() and bool(int(accent) & STACCATO)
+
+
 def read_track(path: Path, track_name: str) -> Score:
-    """Notes (String/Fret, dead, tied), durations (NoteValue, dots, PrimaryTuplet);
-    first voice only."""
+    """Notes (String/Fret, dead, tied, techniques), durations (NoteValue, dots,
+    PrimaryTuplet); first voice only."""
     root = _load(Path(path))
     bars, voices = _index(root, "Bars"), _index(root, "Voices")
     beats, notes, rhythms = _index(root, "Beats"), _index(root, "Notes"), _index(root, "Rhythms")
@@ -83,6 +121,7 @@ def read_track(path: Path, track_name: str) -> Score:
                     note.dead = "Muted" in p
                     tie = notes[nid].find("Tie")
                     note.tied = tie is not None and tie.get("destination", "").lower() == "true"
+                    techniques(notes[nid], note)
                     beat_notes.append(note)
                 beat_notes.sort(key=lambda n: n.string)
                 out.append(Beat(duration, dots, tuplet, not beat_notes, beat_notes))

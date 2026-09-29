@@ -18,6 +18,22 @@ class Note:
     confidence: float = 1.0
     dead: bool = False  # "x" in the tab; fret is 0
     tied: bool = False  # continues the previous note on the same string (not re-picked)
+    # playing techniques (all per note, as Guitar Pro and alphaTab store them)
+    bend: float | None = None  # peak bend in semitones: 1 = "1/2", 2 = "full", 3 = "1 1/2"
+    bend_release: bool = False  # the bend goes back down to the fret's pitch
+    slide: str | None = None  # slide out of the note: one of SLIDES_OUT
+    slide_in: str | None = None  # slide into the note: one of SLIDES_IN
+    hopo: bool = False  # hammer-on/pull-off origin: slurred to the next note on this string
+    harmonic: str | None = None  # one of HARMONICS
+    harmonic_fret: float | None = None  # Guitar Pro's HarmonicFret (e.g. 12, or 5 for <13>)
+    vibrato: bool = False
+    palm_mute: bool = False
+    staccato: bool = False
+
+
+SLIDES_OUT = ("shift", "legato", "out_down", "out_up")
+SLIDES_IN = ("below", "above")
+HARMONICS = ("natural", "artificial", "pinch", "tap", "semi", "feedback")
 
 
 @dataclass
@@ -97,6 +113,16 @@ class Score:
                             _num(n, "confidence", 1.0, nw),
                             _bool(n, "dead", False, nw),
                             _bool(n, "tied", False, nw),
+                            _num(n, "bend", None, nw, optional=True),
+                            _bool(n, "bend_release", False, nw),
+                            _choice(n, "slide", SLIDES_OUT, nw),
+                            _choice(n, "slide_in", SLIDES_IN, nw),
+                            _bool(n, "hopo", False, nw),
+                            _choice(n, "harmonic", HARMONICS, nw),
+                            _num(n, "harmonic_fret", None, nw, optional=True),
+                            _bool(n, "vibrato", False, nw),
+                            _bool(n, "palm_mute", False, nw),
+                            _bool(n, "staccato", False, nw),
                         )
                     )
                 beats.append(
@@ -231,11 +257,20 @@ def _str(d: dict, key: str, where: str) -> str:
     raise ValueError(f"{where} 应为字符串")
 
 
-def _num(d: dict, key: str, default: float, where: str) -> float:
+def _num(d: dict, key: str, default: float | None, where: str, optional: bool = False):
     v = d.get(key, default)
+    if v is None and optional:
+        return None
     if isinstance(v, int | float) and not isinstance(v, bool):
         return float(v)
     raise ValueError(f"{where}.{key} 应为数字")
+
+
+def _choice(d: dict, key: str, choices: tuple[str, ...], where: str) -> str | None:
+    v = d.get(key)
+    if v is None or v in choices:
+        return v
+    raise ValueError(f"{where}.{key} 应为 {' / '.join(choices)} 之一")
 
 
 def _bool(d: dict, key: str, default: bool, where: str) -> bool:
