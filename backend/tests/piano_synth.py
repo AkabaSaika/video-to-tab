@@ -68,7 +68,7 @@ def piano_page_video(path: Path, seconds: float = 1.5, quality: int = 55) -> Pat
         boxes = []
         for i in group:
             s = systems[i]
-            part = img[s["y0"] - 30 : s["y1"] + 30]
+            part = img[max(0, s["y0"] - 30) : s["y1"] + 30]
             page[y : y + part.shape[0]] = part
             boxes.append((y + 30, y + part.shape[0] - 30))
             y += part.shape[0]
