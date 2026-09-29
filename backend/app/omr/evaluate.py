@@ -46,6 +46,31 @@ def _tied(b: Beat) -> dict:
     return {(n.string, "x" if n.dead else n.fret): n.tied for n in b.notes}
 
 
+def _by_key(b: Beat) -> dict:
+    return {(n.string, "x" if n.dead else n.fret): n for n in b.notes}
+
+
+# technique -> whether it carries a value (bend amount, slide or harmonic kind) that is
+# compared too; bend_release is counted with the bend's value
+TECHNIQUES = {
+    "bend": True,
+    "slide": True,
+    "slide_in": True,
+    "hopo": False,
+    "harmonic": True,
+    "vibrato": False,
+    "palm_mute": False,
+    "staccato": False,
+}
+
+
+def _technique(n, name: str):
+    v = getattr(n, name)
+    if name == "bend" and v is not None:
+        return (v, n.bend_release)
+    return v or None
+
+
 def _rhythm(b: Beat) -> tuple:
     return (b.duration, b.dots, b.tuplet or None)
 
@@ -106,6 +131,8 @@ class Report:
     gt_ties: int = 0
     rec_ties: int = 0
     ties_hit: int = 0
+    # per technique, on notes found in both: gt / rec / hit (both marked) / value_ok
+    tech: dict = field(default_factory=lambda: {t: Counter() for t in TECHNIQUES})
     fret_errors: Counter = field(default_factory=Counter)
     group_errors: Counter = field(default_factory=Counter)
     time_errors: Counter = field(default_factory=Counter)
@@ -127,6 +154,17 @@ class Report:
             "tie_accuracy": pct(self.tie_agree, self.notes_hit),
             "tie_recall": pct(self.ties_hit, self.gt_ties),
             "tie_precision": pct(self.ties_hit, self.rec_ties),
+            "techniques": {
+                t: {
+                    "gt": c["gt"],
+                    "rec": c["rec"],
+                    "hit": c["hit"],
+                    "recall": pct(c["hit"], c["gt"]),
+                    "precision": pct(c["hit"], c["rec"]),
+                    **({"value_ok": c["value_ok"]} if TECHNIQUES[t] else {}),
+                }
+                for t, c in self.tech.items()
+            },
             "extra_measures": self.extra_measures,
             "counts": {"notes": self.notes, "beats": self.beats, "ties": self.gt_ties},
             "fret_errors": dict(self.fret_errors.most_common()),
@@ -185,7 +223,14 @@ def compare(gt: Score, rec: Score, lo: int, hi: int) -> Report:
             common = _notes(g) & _notes(r)
             hit += len(common)
             g_tied, r_tied = _tied(g), _tied(r)
+            g_notes, r_notes = _by_key(g), _by_key(r)
             for key in common:
+                for t, c in rep.tech.items():
+                    gv, rv = _technique(g_notes[key], t), _technique(r_notes[key], t)
+                    c["gt"] += gv is not None
+                    c["rec"] += rv is not None
+                    c["hit"] += gv is not None and rv is not None
+                    c["value_ok"] += gv is not None and gv == rv
                 rep.tie_agree += g_tied[key] == r_tied[key]
                 rep.gt_ties += g_tied[key]
                 rep.rec_ties += r_tied[key]

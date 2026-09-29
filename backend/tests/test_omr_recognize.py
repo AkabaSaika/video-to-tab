@@ -208,6 +208,44 @@ def test_compare_reports_tie_accuracy_on_matched_notes():
     assert s["counts"]["ties"] == 2
 
 
+def test_compare_reports_each_technique_on_matched_notes():
+    from app.omr.evaluate import compare
+    from app.omr.model import Beat, Measure, Note, Score
+
+    def score(*notes):
+        beats = [Beat(4, 0, None, False, [n]) for n in notes]
+        return Score(6, [], None, [Measure(1, (4, 4), beats)])
+
+    gt = score(
+        Note(0, 3, palm_mute=True),
+        Note(0, 3, palm_mute=True),
+        Note(1, 5, bend=2.0),
+        Note(1, 7, slide="legato"),
+    )
+    rec = score(
+        Note(0, 3, palm_mute=True),
+        Note(0, 3, staccato=True),
+        Note(1, 5, bend=1.0),  # found, but the wrong amount
+        Note(1, 7, slide="legato", hopo=True),
+    )
+    t = compare(gt, rec, 1, 1).summary()["techniques"]
+    assert t["palm_mute"] == {"gt": 2, "rec": 1, "hit": 1, "recall": 50.0, "precision": 100.0}
+    assert t["bend"]["hit"] == 1 and t["bend"]["value_ok"] == 0
+    assert t["slide"]["recall"] == 100.0 and t["slide"]["value_ok"] == 1
+    assert t["staccato"] == {"gt": 0, "rec": 1, "hit": 0, "recall": None, "precision": 0.0}
+    assert t["hopo"]["precision"] == 0.0
+    assert set(t) >= {
+        "bend",
+        "slide",
+        "slide_in",
+        "hopo",
+        "harmonic",
+        "vibrato",
+        "palm_mute",
+        "staccato",
+    }
+
+
 DENSE = [  # six-note chords on every beat: the rows between the lines fill up with digits
     [[(s, f) for s, f in zip(range(6), (1, 3, 3, 2, 1, 1), strict=True)]] * 4,
     [[(s, f) for s, f in zip(range(6), (3, 5, 5, 4, 3, 3), strict=True)]] * 4,
