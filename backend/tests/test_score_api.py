@@ -194,6 +194,10 @@ def test_restart_restores_jobs_and_fails_interrupted_ones(tmp_path):
     for status in (Status.DOWNLOADING, Status.ANALYZING, Status.RECOGNIZING):
         busy[status] = store.create()
         store.update(busy[status], status=status, stage="scan")
+    # re-recognizing over an edited score when the program stopped: the score must survive
+    rerun = busy[Status.RECOGNIZING]
+    (rerun.dir / "score.json").write_text('{"title": "edited"}')
+    store.update(rerun, score_order=[0, 1], score_files=["pages/a_000.png", "pages/a_001.png"])
     (tmp_path / "junk").mkdir()
     (tmp_path / "junk" / "state.json").write_text("{not json")
 
@@ -208,6 +212,10 @@ def test_restart_restores_jobs_and_fails_interrupted_ones(tmp_path):
         assert restored.error == INTERRUPTED == "程序重启，处理被中断，请重试"
         on_disk = json.loads((job.dir / "state.json").read_text())
         assert on_disk["status"] == "failed"
+    kept = reloaded.get(rerun.id)
+    assert (rerun.dir / "score.json").read_text() == '{"title": "edited"}'
+    assert kept.score_order == [0, 1]
+    assert kept.score_files == ["pages/a_000.png", "pages/a_001.png"]
     assert reloaded.get("junk") is None
     assert len(reloaded.recent()) == 4
 
@@ -259,3 +267,37 @@ def test_recognize_records_page_files_that_reanalysis_replaces(tmp_path, synth_v
     assert after["score_files"] == job["score_files"]  # still what was recognized
     assert not any((job_dir / f).exists() for f in after["score_files"])
     assert set(after["score_files"]).isdisjoint(p["file"] for p in after["pages"])
+
+
+def test_atomic_write_retries_a_briefly_locked_file(tmp_path, monkeypatch):
+    # Windows: antivirus or the search indexer can hold the file for a moment
+    from app import jobs
+
+    real = jobs.os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 1:
+            raise PermissionError(32, "The process cannot access the file")
+        return real(src, dst)
+
+    monkeypatch.setattr("app.jobs.os.replace", flaky)
+    monkeypatch.setattr("app.jobs.REPLACE_BACKOFF", 0.0)
+    target = tmp_path / "score.json"
+    jobs.write_atomic(target, '{"ok": 1}')
+    assert target.read_text() == '{"ok": 1}' and len(calls) == 2
+    assert [p.name for p in tmp_path.iterdir()] == ["score.json"]
+
+
+def test_atomic_write_gives_up_on_a_file_that_stays_locked(tmp_path, monkeypatch):
+    from app import jobs
+
+    def locked(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr("app.jobs.os.replace", locked)
+    monkeypatch.setattr("app.jobs.REPLACE_BACKOFF", 0.0)
+    with pytest.raises(PermissionError):
+        jobs.write_atomic(tmp_path / "score.json", "{}")
+    assert list(tmp_path.iterdir()) == []

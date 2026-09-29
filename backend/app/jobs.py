@@ -19,13 +19,30 @@ from app.source import SourceError
 INTERRUPTED = "程序重启，处理被中断，请重试"
 
 
+REPLACE_TRIES = 5
+REPLACE_BACKOFF = 0.05  # seconds, doubled per retry
+
+
+def _replace(src: str, dst: Path) -> None:
+    """os.replace, retried briefly: on Windows an antivirus or indexer holding either file
+    makes it fail with PermissionError for a moment."""
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == REPLACE_TRIES - 1:
+                raise
+            time.sleep(REPLACE_BACKOFF * 2**attempt)
+
+
 def write_atomic(path: Path, text: str) -> None:
     """Write via a temp file in the same folder + rename, so readers never see half a file."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

@@ -6,13 +6,13 @@ import { api } from '../api.js'
 import BeatEditor from '../components/BeatEditor.vue'
 import TabRenderer from '../components/TabRenderer.vue'
 import { scoreTuning } from '../lib/alphatex.js'
+import { createAutosaver } from '../lib/autosave.js'
 import { needsReview, nextToReview } from '../lib/scoreEdit.js'
 import { PRESETS, parseTuning, tuningText } from '../lib/tuning.js'
 
 const props = defineProps({ job: { type: Object, required: true } })
 const emit = defineEmits(['back'])
 
-const SAVE_DELAY = 1000 // ms of quiet before an autosave
 const score = shallowRef(null)
 const selected = ref(null)
 const loadError = ref('')
@@ -20,7 +20,6 @@ const renderError = ref('')
 const exportError = ref('')
 const saveState = ref('saved') // saved | pending | saving | unsaved
 const renderer = ref(null)
-let saveTimer = null
 
 onMounted(async () => {
   try {
@@ -32,29 +31,31 @@ onMounted(async () => {
 
 // ------------------------------------------------------------------ autosave
 
-async function save() {
-  clearTimeout(saveTimer)
-  saveTimer = null
-  const sent = score.value
-  saveState.value = 'saving'
-  try {
-    await api.saveScore(props.job.id, sent)
-    if (score.value === sent && !saveTimer) saveState.value = 'saved'
-  } catch {
-    saveState.value = 'unsaved' // retried with the next edit
-  }
-}
+const saver = createAutosaver({
+  save: (value) => api.saveScore(props.job.id, value),
+  onState: (s) => (saveState.value = s),
+  delay: 1000, // ms of quiet before an autosave
+  retryDelay: 5000, // a failed save is retried on its own
+})
 
 function update(next, sel) {
   score.value = next
   if (sel !== undefined) selected.value = sel
-  saveState.value = 'pending'
-  clearTimeout(saveTimer)
-  saveTimer = setTimeout(save, SAVE_DELAY)
+  saver.change(next)
 }
 
+// Leaving with unsaved edits: ask first (a score is too big for a keepalive request).
+function warnIfUnsaved(event) {
+  if (saver.isClean()) return
+  saver.flush()
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onMounted(() => window.addEventListener('beforeunload', warnIfUnsaved))
 onBeforeUnmount(() => {
-  if (saveTimer) save()
+  window.removeEventListener('beforeunload', warnIfUnsaved)
+  saver.flush()
 })
 
 const SAVE_TEXT = { saved: '已保存', pending: '待保存…', saving: '保存中…', unsaved: '未保存' }
