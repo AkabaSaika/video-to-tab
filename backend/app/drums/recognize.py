@@ -290,13 +290,12 @@ def read_header(
     return None, (clef + 0.3 * s) if clef is not None else None
 
 
-def _cross_score(src: np.ndarray, L, s: float) -> np.ndarray:
-    """Best normalized cross-correlation with a drawn cross (three sizes, plain and with
-    a staff line through it; the latter only near a line) at every pixel."""
-    score = np.full(src.shape, -1.0, np.float32)
-    near_line = np.zeros(src.shape[0], bool)
-    for ly in [*L, L[0] - s, L[4] + s]:
-        near_line[max(0, int(ly - 0.2 * s)) : int(ly + 0.2 * s) + 1] = True
+def _templates(s: float) -> list[tuple[np.ndarray, bool, int]]:
+    """(template, only near a staff line, shape): 0 a cross (three sizes, plain and with
+    a staff line through it), 1 a circled cross, 2 a circled slash (Guitar Pro's open
+    and half-open hi-hat)."""
+    out = []
+    blur = 0.08 * s + 0.3
     for size in (0.9, 1.1, 1.3):
         for with_line in (False, True):
             T = int(round(size * s)) | 1
@@ -308,24 +307,69 @@ def _cross_score(src: np.ndarray, L, s: float) -> np.ndarray:
             if with_line:
                 c = tpl.shape[0] // 2
                 cv2.line(tpl, (0, c), (tpl.shape[1] - 1, c), 1.0, max(1, int(round(0.1 * s))))
-            tpl = cv2.GaussianBlur(tpl, (0, 0), 0.08 * s + 0.3)
-            if src.shape[0] < tpl.shape[0] or src.shape[1] < tpl.shape[1]:
-                continue
-            r = cv2.matchTemplate(src, tpl, cv2.TM_CCOEFF_NORMED)
-            o = tpl.shape[0] // 2
-            full = np.full(src.shape, -1.0, np.float32)
-            full[o : o + r.shape[0], o : o + r.shape[1]] = r
-            if with_line:
-                full[~near_line] = -1.0
-            score = np.maximum(score, full)
-    return score
+            out.append((cv2.GaussianBlur(tpl, (0, 0), blur), with_line, 0))
+    for size in (0.85, 1.0, 1.15):
+        for shape in (1, 2):
+            r = size * s / 2
+            pad = max(2, int(0.25 * s))
+            n = int(2 * (r + pad)) | 1
+            c = n // 2
+            tpl = np.zeros((n, n), np.float32)
+            th = max(1, int(round(0.12 * s)))
+            cv2.circle(tpl, (c, c), int(round(r)), 1.0, th)
+            d = int(round(r * 0.7))
+            cv2.line(tpl, (c - d, c + d), (c + d, c - d), 1.0, th)
+            if shape == 1:
+                cv2.line(tpl, (c - d, c - d), (c + d, c + d), 1.0, th)
+            out.append((cv2.GaussianBlur(tpl, (0, 0), blur), False, shape))
+    return out
+
+
+def _cross_score(src: np.ndarray, L, s: float) -> tuple[np.ndarray, np.ndarray]:
+    """Best normalized cross-correlation with a drawn notehead template at every pixel,
+    and which shape it was (see _templates)."""
+    score = np.full(src.shape, -1.0, np.float32)
+    shape = np.zeros(src.shape, np.uint8)
+    near_line = np.zeros(src.shape[0], bool)
+    for ly in [*L, L[0] - s, L[4] + s]:
+        near_line[max(0, int(ly - 0.2 * s)) : int(ly + 0.2 * s) + 1] = True
+    for tpl, line_only, kind in _templates(s):
+        if src.shape[0] < tpl.shape[0] or src.shape[1] < tpl.shape[1]:
+            continue
+        r = cv2.matchTemplate(src, tpl, cv2.TM_CCOEFF_NORMED)
+        o = tpl.shape[0] // 2
+        full = np.full(src.shape, -1.0, np.float32)
+        full[o : o + r.shape[0], o : o + r.shape[1]] = r
+        if line_only:
+            full[~near_line] = -1.0
+        better = full > score
+        score[better] = full[better]
+        shape[better] = kind
+    return score, shape
+
+
+def _ring(B: np.ndarray, x: int, y: int, s: float) -> bool:
+    """A closed ring around (x, y) (ink at 14 of 16 angles) with ink at its centre."""
+    h, w = B.shape
+    c = max(1, int(round(0.1 * s)))
+    if not B[max(0, y - c) : y + c + 1, max(0, x - c) : x + c + 1].any():
+        return False
+    hits = 0
+    for a in np.linspace(0, 2 * np.pi, 16, endpoint=False):
+        for r in np.arange(0.35 * s, 0.7 * s, 1.0):
+            px, py = int(round(x + r * np.cos(a))), int(round(y + r * np.sin(a)))
+            if 0 <= py < h and 0 <= px < w and B[py, px]:
+                hits += 1
+                break
+    return hits >= 14
 
 
 def _x_heads(B: np.ndarray, vert: np.ndarray, noline: np.ndarray, L, s) -> list[Head]:
     """Crosses by template matching on the ink. A cross touching a filled head (a pedal
     hi-hat right under a kick) is matched again with that head taken out."""
     blur = 0.08 * s + 0.3
-    score = _cross_score(cv2.GaussianBlur((B & (1 - vert)).astype(np.float32), (0, 0), blur), L, s)
+    src = cv2.GaussianBlur((B & (1 - vert)).astype(np.float32), (0, 0), blur)
+    score, shape = _cross_score(src, L, s)
     solid = cv2.morphologyEx(noline, cv2.MORPH_OPEN, _disk(0.5 * s))
     window = np.zeros_like(solid)
     for (_x, _y, w, h, _), c, _ in _comps(solid, int(0.3 * s * s)):
@@ -338,8 +382,11 @@ def _x_heads(B: np.ndarray, vert: np.ndarray, noline: np.ndarray, L, s) -> list[
                 ] = 1
     if window.any():
         clean = B & (1 - vert) & (1 - cv2.dilate(solid, _disk(0.15 * s)))
-        again = _cross_score(cv2.GaussianBlur(clean.astype(np.float32), (0, 0), blur), L, s)
-        score = np.where(window > 0, np.maximum(score, again), score)
+        again, again_shape = _cross_score(
+            cv2.GaussianBlur(clean.astype(np.float32), (0, 0), blur), L, s
+        )
+        use = (window > 0) & (again > score)
+        score[use], shape[use] = again[use], again_shape[use]
     peak = (score == cv2.dilate(score, _disk(0.8 * s))) & (score > X_THRESHOLD)
     heads = []
     r_ = int(0.5 * s)
@@ -348,27 +395,16 @@ def _x_heads(B: np.ndarray, vert: np.ndarray, noline: np.ndarray, L, s) -> list[
             continue  # a filled head / beam / rest, not a cross
         if B[max(0, yy - r_) : yy + r_ + 1, max(0, xx - r_) : xx + r_ + 1].mean() < X_INK:
             continue
-        heads.append(Head(float(xx), float(yy), int(1.1 * s), int(s), "x"))
+        circled = bool(shape[yy, xx] > 0)
+        if circled and not _ring(B, xx, yy, s):
+            continue  # a curl of a rest, a letter: not a closed ring with a crossing in it
+        heads.append(Head(float(xx), float(yy), int(1.1 * s), int(s), "x", circled=circled))
     merged: list[Head] = []
     for hd in sorted(heads, key=lambda h: h.x):
         if any(abs(m.x - hd.x) < 0.6 * s and abs(m.y - hd.y) < 0.5 * s for m in merged[-4:]):
             continue
         merged.append(hd)
     return merged
-
-
-def _circled(noline: np.ndarray, hd: Head, s: float) -> bool:
-    """A ring around the cross (circle-x): ink at most angles of an annulus."""
-    hits = 0
-    for a in np.linspace(0, 2 * np.pi, 16, endpoint=False):
-        found = False
-        for r in np.arange(0.55 * s, 0.85 * s, 1.0):
-            x, y = int(round(hd.x + r * np.cos(a))), int(round(hd.y + r * np.sin(a)))
-            if 0 <= y < noline.shape[0] and 0 <= x < noline.shape[1] and noline[y, x]:
-                found = True
-                break
-        hits += found
-    return hits >= 13
 
 
 def remove_lines(B: np.ndarray, s: float) -> np.ndarray:
@@ -398,8 +434,6 @@ def analyse_staff(ink: np.ndarray, st: Staff, y_lo: int, y_hi: int) -> StaffRead
     )
     time, zone = read_header(noline, L, st.x0, s)
     heads = _x_heads(B, vert, noline, L, s)
-    for hd in heads:
-        hd.circled = _circled(noline, hd, s)
     # filled / hollow heads: fill small holes, open with a disk
     holes = np.zeros_like(noline)
     for (x, y, w, h, a), _, m in _comps((1 - noline).astype(np.uint8), 1):
