@@ -37,6 +37,14 @@ jobs:
       - name: Install backend
         working-directory: backend
         run: uv sync --group build
+      # homr's piano models (~160 MB): cached, else downloaded once; build.py bundles them
+      - uses: actions/cache@v4
+        with:
+          path: data/models/homr
+          key: homr-models-${{ hashFiles('backend/app/piano/engine.py') }}
+      - name: Fetch piano recognition models
+        working-directory: backend
+        run: uv run python -m app.piano.engine --download
       - name: Test backend
         if: runner.os == 'Linux'
         working-directory: backend
