@@ -24,7 +24,11 @@ export const api = {
     form.append('url', url)
     return request('POST', '/api/jobs', form)
   },
+  listJobs: () => request('GET', '/api/jobs'),
   getJob: (id) => request('GET', `/api/jobs/${id}`),
+  recognize: (id, order) => request('POST', `/api/jobs/${id}/recognize`, { order }),
+  getScore: (id) => request('GET', `/api/jobs/${id}/score`),
+  saveScore: (id, score) => request('PUT', `/api/jobs/${id}/score`, score),
   setRegion: (id, region) => request('PUT', `/api/jobs/${id}/region`, region),
   exportPages: (id, order, fmt) => request('POST', `/api/jobs/${id}/export`, { order, fmt }),
   fileUrl: (id, name) => `/api/jobs/${id}/files/${name}`,

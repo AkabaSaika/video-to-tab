@@ -4,7 +4,7 @@ import { api } from '../api.js'
 import { formatTime, moveItem } from '../lib/pages.js'
 
 const props = defineProps({ job: { type: Object, required: true } })
-const emit = defineEmits(['back', 'restart'])
+const emit = defineEmits(['back', 'restart', 'started', 'score'])
 
 const pages = ref(props.job.pages.slice())
 const dragFrom = ref(null)
@@ -31,6 +31,16 @@ function duplicateLabel(dupId) {
   return original ? `重复：同 ${formatTime(original.start)} 段` : '重复'
 }
 
+async function recognize() {
+  error.value = ''
+  if (props.job.score_order.length && !confirm('重新识谱会覆盖已保存的识谱结果和修改，继续吗？')) return
+  try {
+    emit('started', await api.recognize(props.job.id, pages.value.map((p) => p.id)))
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
 async function exportAs(fmt) {
   error.value = ''
   try {
@@ -47,6 +57,8 @@ async function exportAs(fmt) {
     <h2>3. 校对并导出（共 {{ pages.length }} 页）</h2>
     <p>拖动调整顺序，点 × 删除多余页面。标记"重复"的页面与前面某页内容相同（例如副歌重现）。</p>
     <div class="row">
+      <button class="primary" :disabled="!pages.length" @click="recognize">识谱</button>
+      <button v-if="job.score_order.length" @click="emit('score')">继续编辑识谱结果</button>
       <button class="primary" :disabled="!pages.length" @click="exportAs('png')">导出长图 PNG</button>
       <button class="primary" :disabled="!pages.length" @click="exportAs('pdf')">导出 PDF</button>
       <a v-if="links.png" :href="links.png" target="_blank">打开 PNG</a>
