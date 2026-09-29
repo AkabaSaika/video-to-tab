@@ -371,7 +371,7 @@ def capture_pages(video: Path, roi: Roi, fps: float, progress: Progress) -> list
                     shifts.append(y - tracks[k].y)
         dy = int(np.median(shifts)) if shifts else 0
         taken: set[int] = set()
-        for (crop, y, lines, s), sig in zip(found, sigs, strict=True):
+        for (crop, y, _lines, s), sig in zip(found, sigs, strict=True):
             best, best_score = None, SAME
             for k in live:
                 if k in taken or abs(y - (tracks[k].y + dy)) > 2 * s:
