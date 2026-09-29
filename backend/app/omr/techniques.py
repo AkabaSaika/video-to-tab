@@ -275,7 +275,7 @@ def _blank_frets(ink: np.ndarray, frets, s: float) -> np.ndarray:
 
 def above_blobs(ink, gray, staff, frets, bars, top_limit: int) -> list[Blob]:
     """Blobs above the staff's top line, without the fret numbers on the top string and
-    without the measure numbers (grey digits right beside a bar line)."""
+    without the measure numbers (grey digits right beside a bar line; marks are black)."""
     s = staff.spacing
     top = staff.lines[0]
     y0 = max(0, int(top_limit), int(top - 4.5 * s))
@@ -290,8 +290,8 @@ def above_blobs(ink, gray, staff, frets, bars, top_limit: int) -> list[Blob]:
         b.y += y0
         near_bar = any(a - 1.2 * s <= b.cx <= a + 1.6 * s for a, _ in bars)
         pale = float(gray[b.y : b.y + b.h, b.x : b.x + b.w][b.mask].mean()) > 95
-        if near_bar and b.y + b.h >= top - 1.3 * s and (pale or not is_dot(b, s)):
-            continue  # a measure number
+        if near_bar and b.y + b.h >= top - 1.3 * s and pale and not is_dot(b, s):
+            continue  # a measure number (grey, right above a bar line)
         out.append(b)
     return out
 
@@ -435,15 +435,28 @@ def hopo_arcs(arcs, frets, s) -> list:
     return out
 
 
-def slides(glyphs, used: set[int], frets, texts: list[Run], staff, s) -> list:
-    """Diagonals on a string; `texts` are the word runs above the staff ("sl.")."""
+def is_slide_line(b: Blob, s: float) -> bool:
+    """A longer, flatter straight stroke: a slide between two notes further apart."""
+    return (
+        0.3 * s <= b.h <= 1.0 * s
+        and b.w <= 6 * s
+        and b.w / b.h <= 6
+        and b.mask.mean() <= 0.5
+        and abs(slant(b)) >= 0.9
+        and bow(b) <= 0.1
+    )
+
+
+def slides(glyphs, used: set[int], arcs, frets, texts: list[Run], staff, s) -> list:
+    """Diagonals on a string; `texts` are the word runs above the staff ("sl."). A short
+    steep one may slide into or out of a note; a longer one (a glyph, or among `arcs`, the
+    flat blobs of the band) only counts between two notes of its string."""
     lines = staff.lines
     by_string = _string_frets(frets)
     out = []
-    for g in glyphs:
-        b = g.blob
-        if id(g) in used or not is_diagonal(b, s):
-            continue
+    blobs = [g.blob for g in glyphs if id(g) not in used] + list(arcs)
+    cands = [(b, is_diagonal(b, s)) for b in blobs if is_diagonal(b, s) or is_slide_line(b, s)]
+    for b, steep in cands:
         i = int(np.argmin([abs(b.cy - y) for y in lines]))
         if abs(b.cy - lines[i]) > 0.5 * s:
             continue
@@ -451,16 +464,16 @@ def slides(glyphs, used: set[int], frets, texts: list[Run], staff, s) -> list:
         fs = by_string.get(string, [])
         left = [f for f in fs if -0.2 * s <= b.x - (f.x + f.w / 2) <= 0.6 * s]
         right = [f for f in fs if -0.2 * s <= (f.x - f.w / 2) - (b.x + b.w) <= 0.6 * s]
-        down = slant(b) > 0  # "\"
+        down = slant(b) > 0  # "\\"
         if left and right:
             a, z = left[-1], right[0]
             legato = any(t.x1 >= a.x - 0.8 * s and t.x0 <= z.x + 0.8 * s for t in texts)
             a.tech["slide"] = "legato" if legato else "shift"
             out.append(a)
-        elif right:
+        elif right and steep:
             right[0].tech["slide_in"] = "above" if down else "below"
             out.append(right[0])
-        elif left:
+        elif left and steep:
             left[-1].tech["slide"] = "out_down" if down else "out_up"
             out.append(left[-1])
     return out
@@ -586,7 +599,8 @@ def annotate(ink, gray, staff, frets, groups, glyphs, used, arcs, bars, top_limi
     """Mark the techniques of one staff on its frets and beat groups (all measures)."""
     s = staff.spacing
     blobs = above_blobs(ink, gray, staff, frets, bars, top_limit)
-    runs = text_runs([b for b in blobs if b.h <= 1.3 * s and not is_wave(b, s)], s)
+    textual = [b for b in blobs if b.h <= 1.3 * s and not is_wave(b, s) and not is_dash(b, s)]
+    runs = text_runs(textual, s)  # dashes belong to P.M. extents, not to the text
 
     def digit_of(b: Blob) -> int | None:
         lab, conf = clf.classify([b], s)[0]
@@ -599,7 +613,7 @@ def annotate(ink, gray, staff, frets, groups, glyphs, used, arcs, bars, top_limi
     flat_above = [b for b in flat_above if not is_wave(b, s) and not is_dash(b, s)]
     arced = hopo_arcs(list(arcs) + flat_above, frets, s)
     words = [r for r in runs if len(r.blobs) >= 2 and not is_palm_mute(r, s)]
-    slid = slides(glyphs, used, frets, words, staff, s)
+    slid = slides(glyphs, used, arcs, frets, words, staff, s)
     bent = bends(ink, staff, frets, bars, runs, s, digit_of)
     vib = vibratos(blobs, groups, s)
     return {
