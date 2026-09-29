@@ -11,12 +11,14 @@ SPACING = 24  # px between strings
 TOP = 60
 
 
-def draw_line(measures, strings=6, stems=True, final_bar="thin", label=None, tuplet_in=None):
+def draw_line(
+    measures, strings=6, stems=True, final_bar="thin", label=None, tuplet_in=None, through=False
+):
     """measures: list of measures, each a list of 4 beats, each a list of (string, fret).
     Draws one tab line with quarter-note stems below every beat. Options mimic Guitar Pro:
     a thin+thick final bar, a track label before the first bar, and a tuplet "3" under the
     measure with index `tuplet_in`."""
-    return draw_system([measures], strings, stems, final_bar, label, tuplet_in)
+    return draw_system([measures], strings, stems, final_bar, label, tuplet_in, through)
 
 
 def draw_system(
@@ -247,3 +249,34 @@ def test_staff_check_counts_long_runs_not_darkness():
     # the gaps between the lines, as detect_staves' inverted pass can report them
     gaps = [y + s // 2 for y in lines[:-1]]
     assert not _lines_are_ink(gray, Staff(gaps, 0, 899))
+
+
+THROUGH = [  # stems start right under the (lowest) number and run down through the staff
+    [[(4, 1)], [(4, 15)], [(3, 1)], [(4, 13)]],
+    [[(2, 11)], [(4, 12), (2, 1)], [(1, 1)], [(4, 14)]],
+]  # (not on the top string: a stem from there spans the staff like a bar line)
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
+def test_stem_touching_a_one_is_not_part_of_the_number():
+    score = only_track(recognize_images([draw_line(THROUGH, through=True)]))
+    assert notes_of(score) == [[sorted(b) for b in m] for m in THROUGH]
+
+
+def test_narrow_digit_read_as_four_is_a_one():
+    """Guitar Pro's "1" (a flag and a stroke, no base) can look like a "4" to the
+    classifier; a "4" is never much narrower than half its height."""
+    from app.omr.glyphs import Blob
+    from app.omr.recognize import Glyph, frets_from_glyphs
+    from app.region import Staff
+
+    staff = Staff([60, 80, 100, 120, 140, 160], 0, 400)
+
+    def glyph(x, w, label, conf=0.8):
+        return Glyph(Blob(x, 72, w, 16, np.ones((16, w), bool)), label, conf)
+
+    glyphs = [glyph(100, 6, "4"), glyph(108, 11, "5"), glyph(200, 11, "4"), glyph(300, 6, "4")]
+    glyphs += [glyph(400, 6, "4", 0.39), glyph(408, 11, "2")]  # unsure between 1 and 4
+    frets = frets_from_glyphs(glyphs, [], staff)
+    assert [(f.string, f.fret) for f in frets] == [(4, 15), (4, 4), (4, 1), (4, 12)]
+    assert frets[-1].conf < 0.7  # still flagged for review

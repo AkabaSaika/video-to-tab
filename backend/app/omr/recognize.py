@@ -35,6 +35,8 @@ MIN_DIGIT_CONF = 0.4
 SMALL_DIGIT = 0.72  # digits smaller than this fraction of the typical height are annotations
 HIDDEN_STEM = 0.95  # min stem length (in s) for a beat without a number
 STRING_TOL = 0.33  # max distance (in s) from a digit's center to its string line
+STEM_IN_STAFF = 1.1  # min length (in s) of a thin vertical stroke that is a stem, not a digit
+NARROW_ONE = 0.45  # a digit narrower than this share of its height can only be a "1"
 
 
 @dataclass
@@ -210,6 +212,50 @@ def _string_of(cy: float, lines: list[int], s: float) -> int | None:
     return len(lines) - 1 - i
 
 
+def remove_stems(ink: np.ndarray, staff: Staff, y0: int, y1: int) -> np.ndarray:
+    """Rows y0..y1 of `ink` without stems drawn through the staff: thin vertical strokes
+    longer than STEM_IN_STAFF * s, which no digit has, that leave the band (a stem runs
+    on to its beams or flags; the straight side of a ring around a chord stays inside).
+    Strokes are measured on a taller slice, so a stem counts with its full length. A stem running up
+    into a number can be one stroke with a "1" (same column); when such a stroke starts
+    in the upper half of a number on a string line and has ink beside its top (the flag
+    of a "1"), the part down to that number's bottom is kept."""
+    s = staff.spacing
+    k = max(5, int(round(STEM_IN_STAFF * s)))
+    t0, t1 = max(0, int(y0 - 2 * s)), min(ink.shape[0], int(y1 + 3 * s))
+    vert = cv2.morphologyEx(
+        ink[t0:t1],
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)),
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(vert, connectivity=8)
+    drop = np.zeros_like(vert)
+    for i in range(1, n):
+        x, y, w, h, _ = (int(v) for v in stats[i])
+        top, bottom = y + t0, y + t0 + h
+        if w > max(3, 0.25 * s) or (top > y0 - 0.3 * s and bottom < y1 + 0.3 * s):
+            continue  # too thick for a stem, or inside the band
+        line = min(staff.lines, key=lambda ly: abs(ly - top))
+        keep = 0
+        if 0 < line - top <= 0.55 * s:  # may start inside a number sitting on `line`
+            rows = ink[top : top + int(0.3 * s) + 1]
+            reach = int(0.35 * s)
+            beside = (
+                rows[:, max(0, x - reach) : max(0, x - 1)].any()
+                or rows[:, x + w + 1 : x + w + reach].any()
+            )
+            if beside:
+                keep = max(0, int(line + 0.45 * s) - top)
+        part = (labels[y : y + h, x : x + w] == i).astype(np.uint8)
+        part[:keep] = 0
+        drop[y : y + h, x : x + w] |= part
+    # also the anti-aliased columns right beside the stroke
+    drop = cv2.dilate(drop, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1)))
+    return ink[y0:y1] & (1 - drop[y0 - t0 : y1 - t0])
+
+
 def staff_glyphs(ink: np.ndarray, staff: Staff, bars: list[tuple[int, int]], clf: GlyphClassifier):
     """Classified glyphs inside the staff band plus the enclosure (circle) blobs.
     `bars` are bar-line extents; glyphs left or right of the staff's lines (a track label
@@ -217,7 +263,7 @@ def staff_glyphs(ink: np.ndarray, staff: Staff, bars: list[tuple[int, int]], clf
     s = staff.spacing
     y0, y1 = staff_band(staff)
     y0, y1 = max(0, y0), min(ink.shape[0], y1)
-    band = ink[y0:y1].copy()
+    band = remove_stems(ink, staff, y0, y1)
     for a, b in bars:  # bar lines are not glyphs; blank the whole (double/final) bar
         band[:, max(0, a - 2) : b + 5] = 0
     blobs = components(band, min_area=4)
@@ -251,8 +297,21 @@ def _is_stem_piece(g: Glyph, digits: list[Glyph], s: float, band: tuple[int, int
     return at_edge or any(touches(o.blob, up) for o in digits for up in (True, False))
 
 
+def _narrow_ones(glyphs: list[Glyph]) -> list[Glyph]:
+    """A digit much narrower than half its height is a "1", whatever the classifier said
+    (Guitar Pro's "1", a flag on a stroke without a base, is often read as a "4"). An
+    unsure reading is kept (at the minimum confidence, so it is still flagged)."""
+    return [
+        Glyph(g.blob, "1", max(g.conf, MIN_DIGIT_CONF))
+        if g.label in DIGITS and g.label != "1" and g.blob.w < NARROW_ONE * g.blob.h
+        else g
+        for g in glyphs
+    ]
+
+
 def frets_from_glyphs(glyphs: list[Glyph], circles: list[Blob], staff: Staff) -> list[Fret]:
     s = staff.spacing
+    glyphs = _narrow_ones(glyphs)
     digits = [g for g in glyphs if g.label in (*DIGITS, "x") and g.conf >= MIN_DIGIT_CONF]
     if digits:  # annotations (harmonic frets...) and specks are smaller than fret numbers
         typical = float(np.median([g.blob.h for g in digits]))
