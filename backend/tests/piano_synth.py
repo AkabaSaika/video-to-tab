@@ -26,7 +26,7 @@ def _cursor(frame: np.ndarray, top: int, bottom: int, t: float) -> None:
     cv2.line(frame, (x, max(0, top)), (x, min(SIZE[1] - 1, bottom)), (40, 40, 220), 3)
 
 
-def scroll_video(path: Path, speed: float = 150.0, quality: int = 55) -> Path:
+def piano_scroll_video(path: Path, speed: float = 150.0, quality: int = 55) -> Path:
     """The score scrolls up continuously, `speed` pixels per second, after a short hold."""
     img, systems = score(), meta()["systems"]
     end = img.shape[0] - SIZE[1]
@@ -57,7 +57,7 @@ def pages() -> list[list[int]]:
     return groups + [current]
 
 
-def page_video(path: Path, seconds: float = 1.5, quality: int = 55) -> Path:
+def piano_page_video(path: Path, seconds: float = 1.5, quality: int = 55) -> Path:
     """Whole pages of systems, each shown for `seconds`, hard cuts between them."""
     img, systems = score(), meta()["systems"]
     out = _writer(path, quality)

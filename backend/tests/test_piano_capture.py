@@ -3,7 +3,7 @@ import pytest
 
 from app.piano.capture import capture
 from tests.piano_data import meta, score
-from tests.piano_synth import page_video, pages, scroll_video
+from tests.piano_synth import pages, piano_page_video, piano_scroll_video
 
 GT = meta()["systems"]
 
@@ -32,7 +32,7 @@ def check(systems) -> None:
 
 @pytest.fixture(scope="module")
 def scroll(tmp_path_factory):
-    return scroll_video(tmp_path_factory.mktemp("piano") / "scroll.avi")
+    return piano_scroll_video(tmp_path_factory.mktemp("piano") / "scroll.avi")
 
 
 def test_scrolling_video_gives_each_system_once_whole_and_in_order(scroll):
@@ -44,8 +44,8 @@ def test_scrolling_video_gives_each_system_once_whole_and_in_order(scroll):
 
 def test_page_turn_video_gives_each_system_once_whole_and_in_order(tmp_path):
     assert len(pages()) >= 3
-    check(capture(page_video(tmp_path / "pages.avi")))
+    check(capture(piano_page_video(tmp_path / "pages.avi")))
 
 
 def test_fast_scroll_still_catches_every_system(tmp_path):
-    check(capture(scroll_video(tmp_path / "fast.avi", speed=400, quality=40)))
+    check(capture(piano_scroll_video(tmp_path / "fast.avi", speed=400, quality=40)))
