@@ -324,3 +324,81 @@ def test_parenthesized_number_is_a_tied_note():
         [[(3, 5, False)], [(3, 5, True)], [(2, 12, False)], [(0, 3, False), (2, 12, True)]],
         [[(4, 10, False)], [(4, 10, False)], [(0, 15, False), (1, 17, False)], [(5, 8, False)]],
     ]
+
+
+def test_parentheses_merged_across_a_stacked_chord_are_not_digits():
+    # Guitar Pro, measured on a real video (s = 19.6): the "(" of three stacked tied notes
+    # merge into one thin stroke 60 px tall, classified "4"; the ")" side into a "1".
+    # They must become parentheses (so the notes are tied), not digits of "46"/"161".
+    import numpy as np
+
+    from app.omr.glyphs import Blob
+    from app.omr.recognize import Glyph, frets_from_glyphs
+    from app.region import Staff
+
+    staff = Staff([284, 304, 324, 344, 362, 382], 0, 1900)
+
+    def blob(x, y, w, h):
+        return Blob(x, y, w, h, np.ones((h, w), bool))
+
+    glyphs = [
+        Glyph(blob(1405, 296, 5, 60), "4", 0.96),  # merged "(((" over strings 4, 3, 2
+        Glyph(blob(1412, 297, 10, 15), "5", 1.0),
+        Glyph(blob(1412, 316, 10, 16), "6", 1.0),
+        Glyph(blob(1412, 336, 10, 16), "5", 1.0),
+        Glyph(blob(1424, 296, 5, 60), "1", 0.96),  # merged ")))"
+    ]
+    arcs = [blob(1330, y, 70, 5) for y in (300, 320, 340)]  # tie arcs ending before "("
+    frets = frets_from_glyphs(glyphs, [], staff, arcs)
+    assert sorted((f.string, f.fret, f.tied) for f in frets) == [
+        (2, 5, True),
+        (3, 6, True),
+        (4, 5, True),
+    ]
+
+
+def test_tie_across_a_bar_line_and_a_paren_read_as_other():
+    # measured on a real video (s = 19.6): the tie arc crosses the bar line, which is blanked
+    # before glyph extraction, so only a short flat remnant is left before the "(";
+    # and this note's "(" was classified "other" rather than "paren"
+    import numpy as np
+
+    from app.omr.glyphs import Blob
+    from app.omr.recognize import Glyph, frets_from_glyphs
+    from app.region import Staff
+
+    staff = Staff([284, 304, 324, 344, 362, 382], 0, 1900)
+
+    def blob(x, y, w, h):
+        return Blob(x, y, w, h, np.ones((h, w), bool))
+
+    glyphs = [
+        Glyph(blob(1384, 386, 4, 2), "other", 1.0),  # arc remnant right of the bar line,
+        # ending 17 px (0.87 s) before the "(": the rest of the arc was blanked with the bar
+        Glyph(blob(1405, 375, 5, 16), "other", 0.6),  # "("
+        Glyph(blob(1412, 375, 10, 16), "5", 1.0),
+        Glyph(blob(1424, 375, 5, 16), "paren", 1.0),  # ")"
+    ]
+    frets = frets_from_glyphs(glyphs, [], staff, [])
+    assert [(f.string, f.fret, f.tied) for f in frets] == [(0, 5, True)]
+
+
+def test_ghost_note_without_an_arc_stays_untied():
+    import numpy as np
+
+    from app.omr.glyphs import Blob
+    from app.omr.recognize import Glyph, frets_from_glyphs
+    from app.region import Staff
+
+    staff = Staff([284, 304, 324, 344, 362, 382], 0, 1900)
+
+    def blob(x, y, w, h):
+        return Blob(x, y, w, h, np.ones((h, w), bool))
+
+    glyphs = [
+        Glyph(blob(1405, 375, 5, 16), "other", 0.6),
+        Glyph(blob(1412, 375, 10, 16), "5", 1.0),
+        Glyph(blob(1424, 375, 5, 16), "paren", 1.0),
+    ]
+    frets = frets_from_glyphs(glyphs, [], staff, [])
+    assert [(f.string, f.fret, f.tied) for f in frets] == [(0, 5, False)]

@@ -315,10 +315,19 @@ def _narrow_ones(glyphs: list[Glyph]) -> list[Glyph]:
     ]
 
 
-def _is_tied(x0: float, x1: float, cy: float, parens: list[Blob], arcs: list[Blob], s: float):
+def _is_tied(
+    x0: float,
+    x1: float,
+    cy: float,
+    parens: list[Blob],
+    arcs: list[Blob],
+    s: float,
+    remnants: list[Blob] = (),
+):
     """Guitar Pro draws a tied note as its number in parentheses with the tie arc from the
     previous note ending just before the "(". A number in parentheses without that arc
-    is a ghost note, not a tie."""
+    is a ghost note, not a tie. `remnants` are arc pieces cut short by a blanked bar line;
+    their visible end sits further from the "(" than a whole arc's does."""
 
     def covers(p: Blob) -> bool:
         return p.y <= cy <= p.y + p.h
@@ -328,9 +337,11 @@ def _is_tied(x0: float, x1: float, cy: float, parens: list[Blob], arcs: list[Blo
     if not left or not right:
         return False
     start = min(p.x for p in left)
-    return any(
-        -0.1 * s <= start - (a.x + a.w) <= 0.8 * s and abs(a.cy - cy) <= 0.8 * s for a in arcs
-    )
+
+    def ends_before(a: Blob, reach: float) -> bool:
+        return -0.1 * s <= start - (a.x + a.w) <= reach * s and abs(a.cy - cy) <= 0.8 * s
+
+    return any(ends_before(a, 0.8) for a in arcs) or any(ends_before(a, 1.2) for a in remnants)
 
 
 def frets_from_glyphs(
@@ -342,10 +353,14 @@ def frets_from_glyphs(
     typical = float(np.median([g.blob.h for g in digits])) if digits else 0.75 * s
     # annotations (harmonic frets...) and specks are smaller than fret numbers
     digits = [g for g in digits if g.blob.h >= SMALL_DIGIT * typical]
+    # a thin stroke much taller than a number spans several strings: the merged parentheses
+    # of a stacked tied chord (read as "1" or "4"), never a digit
+    digits = [g for g in digits if not (g.blob.w <= 0.4 * s and g.blob.h >= 1.6 * typical)]
     band = staff_band(staff)
     digits = [g for g in digits if not _is_stem_piece(g, digits, s, band)]
-    # parentheses: classified as such, or thin and taller than the numbers (the parens of
-    # a tied chord's adjacent notes merge into one tall stroke)
+    # parentheses: classified as such, or any other thin stroke about as tall as a number
+    # (a "(" is easily read as "other"; the parens of a tied chord's adjacent notes merge
+    # into one tall stroke). _is_tied still needs one on each side plus an incoming arc.
     used = {id(g) for g in digits}
     parens = [
         g.blob
@@ -353,8 +368,15 @@ def frets_from_glyphs(
         if id(g) not in used
         and (
             (g.label == "paren" and g.conf >= 0.5)
-            or (g.blob.w <= 0.4 * s and g.blob.h >= 1.15 * typical)
+            or (g.blob.w <= 0.4 * s and g.blob.h >= 0.8 * typical)
         )
+    ]
+    # a tie arc crossing a bar line is cut where the bar is blanked: only a short flat
+    # remnant is left before the "(", too narrow for the arc filter
+    remnants = [
+        g.blob
+        for g in glyphs
+        if id(g) not in used and g.blob.h <= 0.35 * s and g.blob.w >= max(3, 2 * g.blob.h)
     ]
     digits.sort(key=lambda g: g.blob.x)
     # join neighbouring digits on the same row into multi-digit numbers
@@ -385,7 +407,7 @@ def frets_from_glyphs(
         value = 0 if dead else int("".join(g.label for g in grp))
         conf = float(min(g.conf for g in grp))
         circled = any(c.x <= x0 and c.x + c.w >= x1 and c.y <= cy <= c.y + c.h for c in circles)
-        tied = _is_tied(x0, x1, cy, parens, arcs or [], s)
+        tied = _is_tied(x0, x1, cy, parens, arcs or [], s, remnants)
         frets.append(Fret((x0 + x1) / 2, cy, x1 - x0, h, string, value, conf, circled, dead, tied))
     # one note per string per position: keep the more confident one
     frets.sort(key=lambda f: -f.conf)
