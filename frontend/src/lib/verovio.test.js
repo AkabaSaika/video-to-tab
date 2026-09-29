@@ -22,3 +22,14 @@ describe('verovio', () => {
     expect(await renderSystem(xml)).toMatch(/^<svg/)
   }, 30000)
 })
+
+describe('verovio with drum notation', () => {
+  it('renders the MusicXML the drum export writes: percussion clef, x noteheads', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const drums = await readFile(new URL('./fixtures/drums.musicxml', import.meta.url), 'utf8')
+    const svg = await renderSystem(drums)
+    expect(svg.match(/class="staff"/g)).toHaveLength(1)
+    expect(svg.match(/class="note"/g).length).toBe(14) // 8 hi-hats, 2 snares, 2 kicks, 2 pedals
+    expect(svg).toMatch(/class="clef"/)
+  }, 30000)
+})

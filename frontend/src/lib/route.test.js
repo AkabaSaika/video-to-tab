@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { guitarHash, parseHash, pianoHash } from './route.js'
+import { drumsHash, guitarHash, parseHash, pianoHash } from './route.js'
 
 describe('hash routes', () => {
   it('reads the guitar page and its job', () => {
@@ -12,6 +12,15 @@ describe('hash routes', () => {
     expect(parseHash('#/piano')).toEqual({ page: 'piano', job: null })
     expect(parseHash('#/piano?job=f00d')).toEqual({ page: 'piano', job: 'f00d' })
     expect(parseHash('#/piano?job=')).toEqual({ page: 'piano', job: null })
+  })
+
+  it('reads the drum page and its job', () => {
+    expect(parseHash('#/drums')).toEqual({ page: 'drums', job: null })
+    expect(parseHash('#/drums?job=beef')).toEqual({ page: 'drums', job: 'beef' })
+    expect(parseHash('#/drums?job=')).toEqual({ page: 'drums', job: null })
+    expect(drumsHash('beef')).toBe('#/drums?job=beef')
+    expect(drumsHash(null)).toBe('#/drums')
+    expect(parseHash(drumsHash('x2'))).toEqual({ page: 'drums', job: 'x2' })
   })
 
   it('writes hashes that read back the same', () => {

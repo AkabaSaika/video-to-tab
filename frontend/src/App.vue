@@ -3,12 +3,17 @@ import { defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vu
 import { parseHash } from './lib/route.js'
 import GuitarApp from './views/GuitarApp.vue'
 
-// the piano page (and Verovio with it) is loaded only when it is first opened
+// the piano and drum pages (and Verovio with them) are loaded only when first opened
 const PianoApp = defineAsyncComponent(() => import('./views/PianoApp.vue'))
+const DrumsApp = defineAsyncComponent(() => import('./views/DrumsApp.vue'))
 
 const page = ref(parseHash(location.hash).page)
 const pianoOpened = ref(page.value === 'piano')
-watch(page, (p) => p === 'piano' && (pianoOpened.value = true))
+const drumsOpened = ref(page.value === 'drums')
+watch(page, (p) => {
+  if (p === 'piano') pianoOpened.value = true
+  if (p === 'drums') drumsOpened.value = true
+})
 
 function onHashChange() {
   page.value = parseHash(location.hash).page
@@ -24,11 +29,13 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange))
       <nav class="tabs">
         <button :class="{ on: page === 'guitar' }" @click="page = 'guitar'">吉他 Tab</button>
         <button :class="{ on: page === 'piano' }" @click="page = 'piano'">钢琴谱</button>
+        <button :class="{ on: page === 'drums' }" @click="page = 'drums'">鼓谱</button>
       </nav>
     </header>
-    <!-- both pages stay mounted, so switching never loses the other page's work -->
+    <!-- the pages stay mounted, so switching never loses another page's work -->
     <GuitarApp v-show="page === 'guitar'" :active="page === 'guitar'" />
     <PianoApp v-if="pianoOpened" v-show="page === 'piano'" :active="page === 'piano'" />
+    <DrumsApp v-if="drumsOpened" v-show="page === 'drums'" :active="page === 'drums'" />
   </main>
 </template>
 

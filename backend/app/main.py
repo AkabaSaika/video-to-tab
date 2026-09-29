@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import workflow
+from app.drums.api import drums_router
+from app.drums.jobs import DrumStore
 from app.frames import DecodeError, frame_at
 from app.jobs import Job, JobStore, Status
 from app.models import Roi
@@ -49,14 +51,19 @@ class ExportIn(BaseModel):
     fmt: Literal["png", "pdf"]
 
 
-def create_app(data_dir: Path | None = None, piano_dir: Path | None = None) -> FastAPI:
+def create_app(
+    data_dir: Path | None = None, piano_dir: Path | None = None, drums_dir: Path | None = None
+) -> FastAPI:
     data_dir = data_dir or Path(os.environ.get("VTT_DATA_DIR", REPO_ROOT / "data" / "jobs"))
     piano_dir = piano_dir or Path(os.environ.get("VTT_PIANO_DATA_DIR", data_dir.parent / "piano"))
+    drums_dir = drums_dir or Path(os.environ.get("VTT_DRUMS_DATA_DIR", data_dir.parent / "drums"))
     store = JobStore(data_dir)
     app = FastAPI(title="video-to-tab")
     app.state.store = store
     app.state.piano_store = PianoStore(piano_dir)
     app.include_router(piano_router(app.state.piano_store))
+    app.state.drum_store = DrumStore(drums_dir)
+    app.include_router(drums_router(app.state.drum_store))
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(

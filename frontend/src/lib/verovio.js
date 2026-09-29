@@ -1,5 +1,6 @@
 // Verovio (LGPL, WebAssembly) renders MusicXML to SVG. It is ~7 MB, so it is imported only
-// when the piano page first renders a system; the guitar pages never load it.
+// when the piano or drum page first renders a line (one shared load); the guitar pages never
+// load it.
 let toolkit = null
 let queue = Promise.resolve()
 
