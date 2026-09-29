@@ -67,10 +67,15 @@ def test_single_voice_layout_takes_the_pedal_onsets_from_the_hands():
     gt = gt_measures(m["events"], m["measures"])
     pr = predicted(page.measures)
     assert len(pr) == len(gt)
-    for g, p in zip(gt, pr, strict=True):
+    for i, (g, p) in enumerate(zip(gt, pr, strict=True)):
         want = sorted(e[1] for e in g if e[3] == "ph")
         got = sorted(e[1] for e in p if e[3] == "ph")
-        assert got == want
+        assert got == want, i
+    # the last measure: the hands start on beat 2 without a rest and the kicks of beat 1
+    # are on down stems, so neither voice adds up alone; together they do
+    want = sorted((e[1], e[3]) for e in gt[-1] if e[3] != "rest")
+    assert sorted((e[1], e[3]) for e in pr[-1] if e[3] != "rest") == want
+    assert page.measures[-1].ok
     assert rates(score(gt, pr))["recall"] >= 0.95
 
 

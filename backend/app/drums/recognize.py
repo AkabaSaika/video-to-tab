@@ -777,7 +777,46 @@ def build_measure(
                 ok = exact and all(a < b for a, b in zip(aligned, aligned[1:], strict=False))
         ok_all &= ok
         out_voices[v - 1] = _beats(evs, chosen, onsets)
+    if not ok_all and voices[1] and voices[2]:
+        together = _columns(voices, cap, s)
+        if together is not None:
+            return DrumMeasure(together, True, time)
     return DrumMeasure(out_voices, ok_all, time)
+
+
+def _columns(voices: dict[int, list[Event]], cap: Fraction, s: float) -> list[list[Beat]] | None:
+    """Both voices as one timeline: the events at (nearly) the same x form a column and
+    the columns follow each other, each lasting as long as its shortest event. Guitar Pro
+    writes no rests in either voice, so this is the only sum that works there. None if
+    the columns do not add up either."""
+    events = sorted(((e.x, v, e) for v, evs in voices.items() for e in evs), key=lambda t: t[0])
+    columns: list[list[tuple[int, Event]]] = []
+    for x, v, e in events:
+        if columns and x - columns[-1][0][1].x <= 0.9 * s:
+            columns[-1].append((v, e))
+        else:
+            columns.append([(v, e)])
+
+    def shortest(col: list[tuple[int, Event]]) -> BeatEvidence:
+        best = min(col, key=lambda ve: _candidates(ve[1].evidence)[0].length())
+        return best[1].evidence
+
+    evidence = [shortest(c) for c in columns]
+    chosen, ok = _solve(evidence, cap)
+    natural = [sorted(_candidates(ev), key=lambda o: -o.p)[0] for ev in evidence]
+    # only when every column keeps its most likely duration: a sum forced out of
+    # unlikely readings would place the notes wrongly
+    if not ok or any(
+        (c.duration, c.dots, c.tuplet) != (n.duration, n.dots, n.tuplet)
+        for c, n in zip(chosen, natural, strict=True)
+    ):
+        return None
+    out: list[list[Beat]] = [[], []]
+    for col, onset in zip(columns, _sequential(chosen), strict=True):
+        for v, e in col:
+            own = sorted(_candidates(e.evidence), key=lambda o: -o.p)[0]
+            out[v - 1].append(Beat(onset, own.duration, own.dots, own.tuplet, e.rest, e.notes))
+    return out
 
 
 # ------------------------------------------------------------------------ the page

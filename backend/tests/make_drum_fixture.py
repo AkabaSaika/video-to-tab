@@ -15,8 +15,9 @@ Pieces are written in a tiny DSL (below) and become:
   synthetic step-scrolling video), with its bar lines.
 Pages are cropped to their ink and stored in grey to keep the fixture small.
 
-The DSL: per measure a (hands, feet) pair of space separated tokens DUR:INST[+INST] or
-DUR:r, DUR one of w h q e s ('.' = dotted). Units in the events are 16ths.
+The DSL: per measure a (hands, feet) pair of space separated tokens DUR:INST[+INST],
+DUR:r (a rest) or DUR:R (a rest that is not drawn, as Guitar Pro leaves them out), DUR one
+of w h q e s ('.' = dotted). Units in the events are 16ths.
 """
 
 from __future__ import annotations
@@ -166,6 +167,8 @@ PIECES: dict[str, dict] = {
             ("e:hh+bd e:hh e:hh+sn e:hh+bd e:hh e:hh+bd e:hh+sn e:hh", rep("e:r e:ph", 4)),
             ("q:cr+bd q:sn q:bd q:sn", "e:r e:ph q:r e:r e:ph q:r"),
             ("e:hh+bd e:hh e:hh+sn e:hh s:sn s:sn s:t1 s:t1 s:t2 s:t2 s:ft s:ft", "h:r q:ph q:r"),
+            # the hands start on beat 2 without a rest, the kick pair is on down stems
+            ("q:R q:cr+sn e:hh+bd e:hh e:hh+sn e:hh+bd", "e:bd+ph e:bd h.:R"),
         ],
     },
 }
@@ -178,7 +181,7 @@ def parse_voice(text: str) -> list[tuple[int, list[str]]]:
     for tok in text.split():
         d, inst = tok.split(":")
         dur = UNITS[d[0]] * (3 if d.endswith(".") else 2) // 2
-        out.append((dur, [] if inst == "r" else inst.split("+")))
+        out.append((dur, [] if inst in ("r", "R") else inst.split("+"), inst == "R"))
     return out
 
 
@@ -190,7 +193,7 @@ def events(piece: dict) -> list[list]:
     for mi, pair in enumerate(piece["measures"]):
         for vi, text in enumerate(pair, 1):
             t = 0
-            for dur, insts in parse_voice(text):
+            for dur, insts, _ in parse_voice(text):
                 for i in insts or ["rest"]:
                     ev.append([mi, vi, t, dur, i])
                 t += dur
@@ -202,7 +205,7 @@ def beams(voice: list, beat: int) -> list[list[tuple[int, str]]]:
     """Beam tags per note: notes shorter than a quarter within one beat are joined."""
     tags: list[list[tuple[int, str]]] = [[] for _ in voice]
     t, groups, cur, cur_beat = 0, [], [], None
-    for i, (dur, insts) in enumerate(voice):
+    for i, (dur, insts, _) in enumerate(voice):
         b = t // beat
         if insts and dur < 4 and (t + dur - 1) // beat == b:
             if cur and cur_beat == b and cur[-1] == i - 1:
@@ -269,11 +272,13 @@ def musicxml(piece: dict) -> str:
             if vi == 2:
                 out.append(f"<backup><duration>{cap}</duration></backup>")
             voice = parse_voice(text)
-            for (dur, insts), bt in zip(voice, beams(voice, beat), strict=True):
+            for (dur, insts, hidden), bt in zip(voice, beams(voice, beat), strict=True):
                 typ, dots = TYPES[dur]
                 if not insts:
-                    if vi == 2 and piece.get("gp"):
-                        out.append(f"<forward><duration>{dur}</duration><voice>2</voice></forward>")
+                    if hidden or (vi == 2 and piece.get("gp")):
+                        out.append(
+                            f"<forward><duration>{dur}</duration><voice>{vi}</voice></forward>"
+                        )
                     elif dur == cap:
                         out.append(
                             f'<note><rest measure="yes"/><duration>{dur}</duration>'
@@ -320,7 +325,7 @@ def lily(piece: dict) -> str:
     def voice(idx: int) -> str:
         toks = []
         for pair in piece["measures"]:
-            for dur, insts in parse_voice(pair[idx]):
+            for dur, insts, _ in parse_voice(pair[idx]):
                 if not insts:
                     toks.append("r" + LILY[dur])
                     continue
