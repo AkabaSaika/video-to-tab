@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { pianoApi } from '../api.js'
 import { formatTime } from '../lib/pages.js'
-import { exportName, rowState, withoutSystem } from '../lib/piano.js'
+import { exportName, rowState } from '../lib/piano.js'
 import SystemScore from '../components/SystemScore.vue'
 
 const props = defineProps({ job: { type: Object, required: true } })
@@ -20,7 +20,6 @@ async function remove(system, index) {
     emit('update', await pianoApi.deleteSystem(props.job.id, system.id))
   } catch (e) {
     error.value = e.message
-    emit('update', withoutSystem(props.job, -1))
   }
 }
 

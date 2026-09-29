@@ -54,9 +54,11 @@ function stageClass(status) {
 }
 
 onMounted(async () => {
-  setHash(null)
   const { page, job: id } = parseHash(location.hash)
-  if (page !== 'piano' || !id) return
+  if (page !== 'piano' || !id) {
+    setHash(null) // opened from the guitar page: show the piano page's own URL
+    return
+  }
   try {
     track(await pianoApi.getJob(id))
   } catch (e) {
