@@ -138,3 +138,22 @@ def test_compare_counts_recognized_measures_missing_from_ground_truth():
     summary = compare(gt, rec, 1, 1).summary()
     assert summary["extra_measures"] == 1
     assert summary["fret_precision"] == 50.0
+
+
+def test_compare_reports_tie_accuracy_on_matched_notes():
+    from app.omr.evaluate import compare
+    from app.omr.model import Beat, Measure, Note, Score
+
+    def song(ties):
+        beats = [
+            Beat(4, 0, None, False, [Note(0, 3), Note(1, 5)]),
+            Beat(4, 0, None, False, [Note(0, 3, tied=ties[0]), Note(1, 5, tied=ties[1])]),
+            Beat(2, 0, None, False, [Note(2, 7, tied=ties[2])]),
+        ]
+        return Score(6, [], None, [Measure(1, (4, 4), beats)])
+
+    s = compare(song([True, True, False]), song([True, False, True]), 1, 1).summary()
+    assert s["tie_accuracy"] == round(100 * 3 / 5, 2)  # 5 matched notes, 2 disagree
+    assert s["tie_recall"] == 50.0  # 1 of the 2 tied notes found
+    assert s["tie_precision"] == 50.0  # 1 of the 2 recognized ties is right
+    assert s["counts"]["ties"] == 2

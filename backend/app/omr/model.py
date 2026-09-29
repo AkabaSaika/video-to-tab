@@ -17,6 +17,7 @@ class Note:
     fret: int
     confidence: float = 1.0
     dead: bool = False  # "x" in the tab; fret is 0
+    tied: bool = False  # continues the previous note on the same string (not re-picked)
 
 
 @dataclass
@@ -65,18 +66,21 @@ class Score:
     tempo: int | None = None
     measures: list[Measure] = field(default_factory=list)
     title: str = ""
+    name: str = ""  # track name, e.g. "Gt.1"
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @staticmethod
-    def from_dict(d: dict) -> Score:
+    def from_dict(d: dict, path: str = "") -> Score:
         """Build a Score from JSON data; missing fields get defaults, wrong types raise
-        ValueError with a Chinese message naming the field."""
-        d = _obj(d, "乐谱")
+        ValueError with a Chinese message naming the field. `path` prefixes field names
+        in messages (e.g. "tracks[1].")."""
+        root = path.rstrip(".") or "乐谱"
+        d = _obj(d, root)
         measures = []
-        for i, m in enumerate(_list(d, "measures", "measures")):
-            where = f"measures[{i}]"
+        for i, m in enumerate(_list(d, "measures", f"{path}measures")):
+            where = f"{path}measures[{i}]"
             m = _obj(m, where)
             beats = []
             for j, b in enumerate(_list(m, "beats", f"{where}.beats")):
@@ -92,6 +96,7 @@ class Score:
                             _int(n, "fret", 0, nw),
                             _num(n, "confidence", 1.0, nw),
                             _bool(n, "dead", False, nw),
+                            _bool(n, "tied", False, nw),
                         )
                     )
                 beats.append(
@@ -123,16 +128,49 @@ class Score:
             )
         tuning = d.get("tuning", [])
         if not (isinstance(tuning, list) and all(_is_int(v) for v in tuning)):
-            raise ValueError("tuning 应为整数列表")
-        title = d.get("title", "")
-        if not isinstance(title, str):
-            raise ValueError("title 应为字符串")
+            raise ValueError(f"{path}tuning 应为整数列表")
         return Score(
-            _int(d, "strings", 6, "乐谱"),
+            _int(d, "strings", 6, root),
             list(tuning),
-            _int(d, "tempo", None, "乐谱", optional=True),
+            _int(d, "tempo", None, root, optional=True),
             measures,
-            title,
+            _str(d, "title", f"{path}title"),
+            _str(d, "name", f"{path}name"),
+        )
+
+
+@dataclass
+class Song:
+    """What the editor edits and exports: one Score per track (tab staff), top to bottom.
+    Title and tempo belong to the song; a track's own title/tempo fields are unused."""
+
+    title: str = ""
+    tempo: int | None = None
+    tracks: list[Score] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        tracks = []
+        for t in self.tracks:
+            d = t.to_dict()
+            del d["title"], d["tempo"]
+            tracks.append(d)
+        return {"title": self.title, "tempo": self.tempo, "tracks": tracks}
+
+    @staticmethod
+    def from_dict(d: dict) -> Song:
+        """A Song from JSON; data saved before multi-track support (one Score, no
+        "tracks" key) becomes a one-track song."""
+        d = _obj(d, "乐谱")
+        if "tracks" not in d:
+            score = Score.from_dict(d)
+            song = Song(score.title, score.tempo, [score])
+            score.title, score.tempo = "", None
+            return song
+        tracks = [
+            Score.from_dict(t, f"tracks[{i}].") for i, t in enumerate(_list(d, "tracks", "tracks"))
+        ]
+        return Song(
+            _str(d, "title", "title"), _int(d, "tempo", None, "乐谱", optional=True), tracks
         )
 
 
@@ -184,6 +222,13 @@ def _int(d: dict, key: str, default: int | None, where: str, optional: bool = Fa
     if (v is None and optional) or _is_int(v):
         return v
     raise ValueError(f"{where}.{key} 应为整数")
+
+
+def _str(d: dict, key: str, where: str) -> str:
+    v = d.get(key, "")
+    if isinstance(v, str):
+        return v
+    raise ValueError(f"{where} 应为字符串")
 
 
 def _num(d: dict, key: str, default: float, where: str) -> float:

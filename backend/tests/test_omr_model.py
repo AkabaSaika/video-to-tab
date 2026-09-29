@@ -117,3 +117,88 @@ def test_pad_numbers_on_empty_score():
     from app.omr.model import pad_numbers
 
     assert pad_numbers(Score()) == Score()
+
+
+def test_note_tied_defaults_false_and_round_trips():
+    assert Note(0, 3).tied is False
+    score = Score(6, [], None, [Measure(1, (4, 4), [Beat(4, notes=[Note(0, 3, tied=True)])])])
+    assert Score.from_dict(score.to_dict()) == score
+    with pytest.raises(ValueError, match="tied"):
+        Score.from_dict({"measures": [{"beats": [{"notes": [{"tied": 1}]}]}]})
+
+
+def test_song_round_trips_with_named_tracks():
+    from app.omr.model import Song
+
+    gt1 = Score(6, [40, 45, 50, 55, 59, 64], None, [Measure(1, beats=[Beat(4)])], name="Gt.1")
+    gt2 = Score(7, [35, 40, 45, 50, 55, 59, 64], None, [], name="Gt.2")
+    song = Song("My Song", 180, [gt1, gt2])
+    data = song.to_dict()
+    assert data["title"] == "My Song" and data["tempo"] == 180
+    assert [t["name"] for t in data["tracks"]] == ["Gt.1", "Gt.2"]
+    assert Song.from_dict(data) == song
+
+
+def test_song_from_old_single_score_json_wraps_it():
+    from app.omr.model import Song
+
+    old = Score(6, [40, 45, 50, 55, 59, 64], 150, [Measure(1, beats=[Beat(4)])], "Old")
+    song = Song.from_dict(old.to_dict())
+    assert song.title == "Old" and song.tempo == 150
+    assert len(song.tracks) == 1
+    assert song.tracks[0].measures == old.measures
+    assert song.tracks[0].strings == 6 and song.tracks[0].tuning == old.tuning
+
+
+@pytest.mark.parametrize(
+    ("data", "where"),
+    [
+        ({"tracks": {}}, "tracks"),
+        ({"tracks": [3]}, "tracks[0]"),
+        ({"tracks": [{"strings": "6"}]}, "tracks[0].strings"),
+        ({"tracks": [{"name": 1}]}, "tracks[0].name"),
+        ({"tracks": [], "title": 3}, "title"),
+        ({"tracks": [], "tempo": "fast"}, "tempo"),
+    ],
+)
+def test_song_from_dict_rejects_wrong_types(data, where):
+    from app.omr.model import Song
+
+    with pytest.raises(ValueError, match=re.escape(where)):
+        Song.from_dict(data)
+
+
+def _note_xml(nid, string, fret, tie=None):
+    tie_xml = f"<Tie origin='false' destination='{tie}'/>" if tie else ""
+    return (
+        f"<Note id='{nid}'>{tie_xml}<Properties>"
+        f"<Property name='String'><String>{string}</String></Property>"
+        f"<Property name='Fret'><Fret>{fret}</Fret></Property></Properties></Note>"
+    )
+
+
+def test_gpif_reads_tie_destinations(tmp_path):
+    import zipfile
+
+    from app.omr.gpif import read_track
+
+    gp = tmp_path / "t.gp"
+    with zipfile.ZipFile(gp, "w") as z:
+        z.writestr(
+            "Content/score.gpif",
+            "<GPIF><Tracks><Track id='0'><Name>Lead</Name></Track></Tracks>"
+            "<MasterBars><MasterBar><Time>4/4</Time><Bars>0</Bars></MasterBar></MasterBars>"
+            "<Bars><Bar id='0'><Voices>0 -1 -1 -1</Voices></Bar></Bars>"
+            "<Voices><Voice id='0'><Beats>0 1</Beats></Voice></Voices>"
+            "<Beats><Beat id='0'><Rhythm ref='0'/><Notes>0</Notes></Beat>"
+            "<Beat id='1'><Rhythm ref='0'/><Notes>1 2</Notes></Beat></Beats>"
+            "<Notes>"
+            + _note_xml(0, 2, 14)
+            + _note_xml(1, 2, 14, tie="true")
+            + _note_xml(2, 0, 3, tie="false")
+            + "</Notes><Rhythms><Rhythm id='0'><NoteValue>Half</NoteValue></Rhythm></Rhythms>"
+            "</GPIF>",
+        )
+    beats = read_track(gp, "Lead").measures[0].beats
+    assert [(n.string, n.fret, n.tied) for n in beats[0].notes] == [(2, 14, False)]
+    assert [(n.string, n.fret, n.tied) for n in beats[1].notes] == [(0, 3, False), (2, 14, True)]

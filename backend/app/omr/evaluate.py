@@ -41,6 +41,10 @@ def _notes(b: Beat) -> frozenset:
     return frozenset((n.string, "x" if n.dead else n.fret) for n in b.notes)
 
 
+def _tied(b: Beat) -> dict:
+    return {(n.string, "x" if n.dead else n.fret): n.tied for n in b.notes}
+
+
 def _rhythm(b: Beat) -> tuple:
     return (b.duration, b.dots, b.tuplet or None)
 
@@ -80,7 +84,7 @@ def align(gt: list[Beat], rec: list[Beat]) -> list[tuple[int, int]]:
 
 def _fmt(b: Beat) -> str:
     r = f"{b.duration}{'.' * b.dots}" + (f"/{b.tuplet}" if b.tuplet else "")
-    body = "R" if b.rest else "+".join(f"{n.string}:{n.fret}" for n in b.notes)
+    body = "R" if b.rest else "+".join(f"{n.string}:{'~' * n.tied}{n.fret}" for n in b.notes)
     return f"{r}:{body}"
 
 
@@ -96,6 +100,11 @@ class Report:
     timed: int = 0
     measures_sum_ok: int = 0
     extra_measures: int = 0  # recognized measures with no ground-truth counterpart
+    # ties, on notes found in both (same beat, string and fret)
+    tie_agree: int = 0
+    gt_ties: int = 0
+    rec_ties: int = 0
+    ties_hit: int = 0
     fret_errors: Counter = field(default_factory=Counter)
     group_errors: Counter = field(default_factory=Counter)
     time_errors: Counter = field(default_factory=Counter)
@@ -114,8 +123,11 @@ class Report:
             "beat_grouping": pct(self.grouped, self.beats),
             "duration_on_grouped": pct(self.timed, self.grouped),
             "measures_summing": pct(self.measures_sum_ok, self.found),
+            "tie_accuracy": pct(self.tie_agree, self.notes_hit),
+            "tie_recall": pct(self.ties_hit, self.gt_ties),
+            "tie_precision": pct(self.ties_hit, self.rec_ties),
             "extra_measures": self.extra_measures,
-            "counts": {"notes": self.notes, "beats": self.beats},
+            "counts": {"notes": self.notes, "beats": self.beats, "ties": self.gt_ties},
             "fret_errors": dict(self.fret_errors.most_common()),
             "group_errors": dict(self.group_errors.most_common()),
             "duration_errors": dict(self.time_errors.most_common()),
@@ -171,6 +183,12 @@ def compare(gt: Score, rec: Score, lo: int, hi: int) -> Report:
             g, r = g_beats[i], r_beats[j]
             common = _notes(g) & _notes(r)
             hit += len(common)
+            g_tied, r_tied = _tied(g), _tied(r)
+            for key in common:
+                rep.tie_agree += g_tied[key] == r_tied[key]
+                rep.gt_ties += g_tied[key]
+                rep.rec_ties += r_tied[key]
+                rep.ties_hit += g_tied[key] and r_tied[key]
             for s, f in _notes(g) - common:
                 rf = [rf for rs, rf in _notes(r) if rs == s]
                 if rf:

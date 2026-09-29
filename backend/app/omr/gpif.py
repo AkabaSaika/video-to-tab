@@ -50,7 +50,8 @@ def _rhythm(r: ET.Element) -> tuple[int, int, int | None]:
 
 
 def read_track(path: Path, track_name: str) -> Score:
-    """Notes (String/Fret), durations (NoteValue, dots, PrimaryTuplet); first voice only."""
+    """Notes (String/Fret, dead, tied), durations (NoteValue, dots, PrimaryTuplet);
+    first voice only."""
     root = _load(Path(path))
     bars, voices = _index(root, "Bars"), _index(root, "Voices")
     beats, notes, rhythms = _index(root, "Beats"), _index(root, "Notes"), _index(root, "Rhythms")
@@ -80,6 +81,8 @@ def read_track(path: Path, track_name: str) -> Score:
                     string = int(p["String"].findtext("String"))
                     note = Note(string, int(p["Fret"].findtext("Fret")))
                     note.dead = "Muted" in p
+                    tie = notes[nid].find("Tie")
+                    note.tied = tie is not None and tie.get("destination", "").lower() == "true"
                     beat_notes.append(note)
                 beat_notes.sort(key=lambda n: n.string)
                 out.append(Beat(duration, dots, tuplet, not beat_notes, beat_notes))
