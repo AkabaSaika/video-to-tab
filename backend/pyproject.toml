@@ -11,11 +11,28 @@ dependencies = [
   "numpy>=2",
   "yt-dlp>=2025.1.1",
   "img2pdf>=0.5",
+  # piano sheet recognition (AGPL-3.0); see [tool.uv] below for its dependency overrides
+  "homr==0.7.0",
+  "onnxruntime>=1.24.1,<2",
+  "musicxml==1.4",
+  "pillow>=12.1.1,<13",
+  "requests>=2.32.5",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "httpx2>=2", "scikit-image>=0.24", "ruff>=0.6"]
+dev = ["pytest>=8", "httpx2>=2", "scikit-image>=0.24", "ruff>=0.6", "music21>=9.1"]
 build = ["pyinstaller>=6.10"]
+
+[tool.uv]
+# homr pins opencv-python-headless<5 in metadata only; it runs on OpenCV 5 (only the unused
+# --read-staff-positions path breaks). rapidocr (title OCR only) pulls the GUI build of
+# OpenCV next to the headless one, so it is excluded and app.piano.engine stubs the import.
+# types-pillow is a typing stub package with no runtime use.
+override-dependencies = [
+  "opencv-python-headless>=4.10",
+  "rapidocr; sys_platform == 'never'",
+  "types-pillow; sys_platform == 'never'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
