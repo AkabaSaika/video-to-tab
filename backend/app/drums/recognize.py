@@ -7,8 +7,8 @@ Classical CV, per staff:
   ink, filled and hollow heads as blobs left by a disk opening (small holes filled);
 - stems and bar lines are the vertical strokes; stem direction splits the voices;
 - beams/flags per stem with app.omr.rhythm._count_beams (up stems: the image flipped),
-  dots, rests (shape rules), "o" rings above the staff (open hi-hat), parentheses
-  (ghost notes), accents;
+  dots, rests (the app.omr.glyphs classifier, shape rules when it is unsure), "o" rings
+  above the staff (open hi-hat), parentheses (ghost notes), accents;
 - per voice and measure app.omr.solve.solve_measure fits durations to the time
   signature. A voice without rests (Guitar Pro writes the pedal voice that way) takes
   its onsets from where its notes line up with the other voice instead.
@@ -27,7 +27,7 @@ import numpy as np
 
 from app.drums.model import Beat, DrumMeasure, DrumNote, position
 from app.omr import solve as omr_solve
-from app.omr.glyphs import CLASSES, components, default_classifier, features, merge_pieces
+from app.omr.glyphs import CLASSES, Blob, components, default_classifier, features, merge_pieces
 from app.omr.rhythm import BeatMarks, _count_beams
 from app.omr.solve import BeatEvidence, Option
 from app.piano.systems import find_staves
@@ -617,10 +617,11 @@ def analyse_staff(ink: np.ndarray, st: Staff, y_lo: int, y_hi: int) -> StaffRead
             continue  # other marks around a head
         elif any(abs(x - sm.x) < 0.4 * s and y < sm.bottom and y + h > sm.top for sm in stems):
             continue  # a flag hanging from a stem
-        elif 0.5 <= ws <= 1.4 and 2.0 <= hs <= 3.6:
-            rests.append(Rest(cx, cy, "rest_4" if fill >= 0.34 else "rest_16"))
-        elif 0.5 <= ws <= 1.3 and 1.2 <= hs < 2.0:
-            rests.append(Rest(cx, cy, "rest_8"))
+        elif 0.5 <= ws <= 1.4 and 1.2 <= hs <= 3.6:
+            kind = _rest_kind(m[y : y + h, x : x + w], s)
+            if kind is None:  # the shape rules
+                kind = "rest_8" if hs < 2.0 else "rest_4" if fill >= 0.34 else "rest_16"
+            rests.append(Rest(cx, cy, kind))
     for r in rests:
         r.dot = any(0.3 * s < dx - r.x < 1.6 * s and abs(dy - r.y) < 1.2 * s for dx, dy in dots)
     for hd in heads:
@@ -642,6 +643,14 @@ def analyse_staff(ink: np.ndarray, st: Staff, y_lo: int, y_hi: int) -> StaffRead
         if hd not in keep:
             hd.kind = "dropped"
     return StaffReading(heads, stems, marks, stem_dot, rests, bars, x_start, header_end, time, zone)
+
+
+def _rest_kind(mask: np.ndarray, s: float) -> str | None:
+    """Quarter, eighth or 16th rest by the glyph classifier (app.omr.glyphs); None when
+    it is not sure."""
+    blob = Blob(0, 0, mask.shape[1], mask.shape[0], mask.astype(bool))
+    label, p = default_classifier().classify([blob], s)[0]
+    return label if label in ("rest_4", "rest_8", "rest_16") and p >= 0.6 else None
 
 
 def _is_accent(mask: np.ndarray) -> bool:
