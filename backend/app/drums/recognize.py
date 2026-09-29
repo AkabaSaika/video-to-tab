@@ -281,14 +281,16 @@ def read_header(
     """(time signature, where the clef / time signature end) at the staff start; the
     end is None when there is neither (a later line of a Guitar Pro strip)."""
     clef = _clef_end(noline, L, x0, s)
-    start = clef if clef is not None else x0
+    if clef is None:  # a time signature comes after a clef (notes can look like digits)
+        return None, None
+    start = clef
     time, right = _read_time(noline, L, start, start + 6 * s, s)
     if time is not None:
         return time, right + 0.3 * s
     c = _common_time(noline, L, start, s)
     if c is not None:
         return (4, 4), c + 0.3 * s
-    return None, (clef + 0.3 * s) if clef is not None else None
+    return None, clef + 0.3 * s
 
 
 def _templates(s: float) -> list[tuple[np.ndarray, bool, int]]:

@@ -26,7 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from app.compose import build_pages
+from app.compose import median_page
 from app.drums.recognize import find_lines, layout, remove_lines
 from app.frames import grab_frames, probe, sample_frames
 from app.models import Roi
@@ -44,6 +44,7 @@ SIG_SIZE = (480, 120)
 SAME = 0.35  # signature mismatch below this: the same staff line / measure
 RECENT = 1.5  # seconds a staff line may go unseen and still be the same one
 MIN_HITS = 2
+MEDIAN = 9  # frames per screen for its median image
 
 
 @dataclass
@@ -118,7 +119,7 @@ def highlight_span(img: np.ndarray) -> tuple[int, int] | None:
         & (hsv[..., 2] >= BRIGHT)
     )
     cols = yellow.mean(axis=0) >= YELLOW_COL
-    span = _longest_run(cols, 6)
+    span = _longest_run(cols, max(6, img.shape[1] // 80))  # across the cursor
     if span is None or span[1] - span[0] < 0.03 * img.shape[1]:
         return None
     return span
@@ -155,28 +156,43 @@ class Measure:
     start: float
     end: float
     header: bool = False  # the crop starts at the staff start (clef, time signature)
+    lit: bool = False  # found by the highlight
+    complete: bool = True  # bar lines found on both sides
 
 
-def _snap(bars: list[float], x0: int, x1: int, s: float) -> tuple[int, int]:
-    """A highlight span widened to the bar lines around it."""
-    left = [b for b in bars if b <= x0 + 0.6 * s]
-    right = [b for b in bars if b >= x1 - 0.6 * s and b > x0 + 2 * s]
-    return int(round(max(left))) if left else x0, int(round(min(right))) if right else x1
+def _snap(bars: list[float], x0: int, x1: int, s: float) -> tuple[int, int, bool]:
+    """A highlight span widened to the bar lines right at its ends; whether both were
+    there (the measure is whole on this screen)."""
+    left = [b for b in bars if x0 - 1.0 * s <= b <= x0 + 0.6 * s]
+    right = [b for b in bars if x1 - 0.6 * s <= b <= x1 + 1.0 * s and b > x0 + 2 * s]
+    a = int(round(max(left))) if left else x0
+    b = int(round(min(right))) if right else x1
+    return a, b, bool(left and right)
 
 
-def _periods(spans: list[tuple[float, tuple[int, int] | None]], s: float) -> list:
-    """Consecutive frames highlighting the same measure: [(x0, x1, start, end)]."""
-    out: list[list] = []
+def _periods(spans: list[tuple[float, tuple[int, int] | None]]) -> list:
+    """Consecutive frames highlighting the same measure (their spans overlap by most of
+    the shorter one): [(x0, x1, start, end)], the span from the widest sightings."""
+    groups: list[list] = []
     for t, span in spans:
         if span is None:
             continue
-        if out and abs(out[-1][0][-1] - span[0]) <= max(6, 0.5 * s):
-            out[-1][0].append(span[0])
-            out[-1][1].append(span[1])
-            out[-1][3] = t
-        else:
-            out.append([[span[0]], [span[1]], t, t])
-    return [(int(np.median(x0s)), int(np.median(x1s)), a, b) for x0s, x1s, a, b in out]
+        if groups:
+            a, b = groups[-1][0][-1]
+            overlap = min(b, span[1]) - max(a, span[0])
+            if overlap > 0.6 * min(b - a, span[1] - span[0]):
+                groups[-1][0].append(span)
+                groups[-1][2] = t
+                continue
+        groups.append([[span], t, t])
+    out = []
+    for group, start, end in groups:
+        widest = max(b - a for a, b in group)
+        wide = [(a, b) for a, b in group if b - a >= 0.9 * widest]
+        out.append(
+            (int(np.median([a for a, _ in wide])), int(np.median([b for _, b in wide])), start, end)
+        )
+    return out
 
 
 def _screen_measures(i: int, img: np.ndarray, spans, start: float, end: float) -> list[Measure]:
@@ -184,15 +200,15 @@ def _screen_measures(i: int, img: np.ndarray, spans, start: float, end: float) -
     if lay is None:
         return []
     s = lay.spacing
-    periods = _periods(spans, s)
+    periods = _periods(spans)
     if periods:
         out = []
         for x0, x1, a, b in periods:
-            left, right = _snap(lay.bars, x0, x1, s)
+            left, right, whole = _snap(lay.bars, x0, x1, s)
             if right - left < 2 * s:
                 continue
             header = lay.header is not None and left <= lay.header + s
-            out.append(Measure(i, left, right, a, b, header))
+            out.append(Measure(i, left, right, a, b, header, True, whole or header))
         return out
     # no highlight: every whole measure between bar lines
     edges = [float(b) for b in lay.bars]
@@ -212,28 +228,45 @@ def _crop(img: np.ndarray, m: Measure, last: bool) -> np.ndarray:
 
 
 def _dedupe(screens: list[np.ndarray], measures: list[Measure], lines: dict) -> list[Measure]:
-    """Drop a measure taken twice across a screen change: the same picture right after
-    itself (a highlight seen on both sides of a jump, or screens without a highlight
-    overlapping), unless the two together last longer than a measure usually does."""
+    """Take a measure seen on both sides of a screen change once.
+
+    Highlighted: Guitar Pro may scroll in the middle of a measure, so its highlight is
+    seen at the end of one screen and again (maybe cut off at the left) at the start of
+    the next; together the two last about one measure. The more complete sighting is
+    kept. Without a highlight: the same picture right after itself (overlapping
+    screens)."""
     if not measures:
         return []
-    lengths = [m.end - m.start for m in measures if m.end > m.start]
+    lengths = [m.end - m.start for m in measures if m.lit and m.end > m.start]
     typical = float(np.median(lengths)) if lengths else 0.0
     kept = [measures[0]]
     for m in measures[1:]:
         prev = kept[-1]
-        if prev.screen != m.screen:
+        if prev.screen == m.screen:
+            kept.append(m)
+            continue
+        if m.lit and prev.lit:
+            same = typical > 0 and m.start - prev.end <= 1.0 and m.end - prev.start <= 1.4 * typical
+        else:
             a = _crop(screens[prev.screen], prev, True)
             b = _crop(screens[m.screen], m, True)
-            la, sa = lines[prev.screen]
-            lb, sb = lines[m.screen]
+            (la, sa), (lb, sb) = lines[prev.screen], lines[m.screen]
             same = mismatch(signature(a, la, sa), signature(b, lb, sb)) < SAME
-            together = (m.end - prev.start) if typical else 0.0
-            if same and (typical == 0.0 or together <= 1.4 * typical or prev.start == m.start):
-                if m.end - m.start > prev.end - prev.start:
-                    kept[-1] = m
-                continue
-        kept.append(m)
+        if not same:
+            kept.append(m)
+            continue
+        better = (m.complete, m.x1 - m.x0) > (prev.complete, prev.x1 - prev.x0)
+        merged = m if better else prev
+        kept[-1] = Measure(
+            merged.screen,
+            merged.x0,
+            merged.x1,
+            prev.start,
+            m.end,
+            merged.header,
+            merged.lit,
+            merged.complete,
+        )
     return kept
 
 
@@ -283,6 +316,33 @@ def pack(screens, measures: list[Measure], lines: dict, width: int, y: int) -> l
     return pages
 
 
+def _screen_images(
+    video: Path, roi: Roi, segments: list, fps: float, on_progress: Callable[[int], None]
+) -> list[np.ndarray | None]:
+    """Each segment's median image (the cursor never wins the vote), segment by segment
+    so only one segment's frames are held at a time."""
+    out: list[np.ndarray | None] = [None] * len(segments)
+    wanted: dict[int, int] = {}
+    for k, seg in enumerate(segments):
+        n = seg.end_idx - seg.start_idx + 1
+        for idx in np.unique(np.linspace(seg.start_idx, seg.end_idx, min(n, MEDIAN)).round()):
+            wanted[int(idx)] = k
+    current, frames = None, []
+    for idx, (_, img) in enumerate(sample_frames(video, fps=fps, roi=roi)):
+        on_progress(idx)
+        k = wanted.get(idx)
+        if k is None:
+            continue
+        if k != current and frames:
+            out[current] = median_page(frames)
+            frames = []
+        current = k
+        frames.append(img)
+    if frames:
+        out[current] = median_page(frames)
+    return out
+
+
 def capture_strip(video: Path, roi: Roi, fps: float, progress: Progress) -> list[Captured]:
     duration = probe(video).duration
     total = max(1.0, duration * fps)
@@ -293,21 +353,20 @@ def capture_strip(video: Path, roi: Roi, fps: float, progress: Progress) -> list
         spans.append(highlight_span(img))
         progress(min(0.5, 0.5 * len(times) / total))
     segments = find_segments(times, grays, fps, SegmentParams())
-    pages = build_pages(
+    del grays
+    images = _screen_images(
         video, roi, segments, fps, lambda i: progress(0.5 + min(0.4, 0.4 * i / total))
     )
-    by_start = {p.start: p for p in pages}
     screens, measures, lines = [], [], {}
-    for seg in segments:
-        page = by_start.get(seg.start)
-        if page is None:
+    for seg, image in zip(segments, images, strict=True):
+        if image is None:
             continue
         i = len(screens)
-        screens.append(page.image)
+        screens.append(image)
         seg_spans = [(times[k], spans[k]) for k in range(seg.start_idx, seg.end_idx + 1)]
-        found = _screen_measures(i, page.image, seg_spans, seg.start, seg.end)
+        found = _screen_measures(i, image, seg_spans, seg.start, seg.end)
         if found:
-            lay = layout(page.image)
+            lay = layout(image)
             lines[i] = (lay.lines, lay.spacing)
             measures += found
     measures = _dedupe(screens, measures, lines)
