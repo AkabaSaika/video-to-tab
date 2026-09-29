@@ -16,12 +16,43 @@ def draw_line(measures, strings=6, stems=True, final_bar="thin", label=None, tup
     Draws one tab line with quarter-note stems below every beat. Options mimic Guitar Pro:
     a thin+thick final bar, a track label before the first bar, and a tuplet "3" under the
     measure with index `tuplet_in`."""
+    return draw_system([measures], strings, stems, final_bar, label, tuplet_in)
+
+
+def draw_system(
+    staves,
+    strings=6,
+    stems=True,
+    final_bar="thin",
+    label=None,
+    tuplet_in=None,
+    through=False,
+):
+    """Several tab staves stacked in one line image (Guitar Pro's multi-track system).
+    Each entry of `staves` is a list of measures as in draw_line. A beat may also be:
+    - TIE: a stem without a number (a tied continuation, as Guitar Pro draws it);
+    - a list holding (string, "(14)")-style frets: a parenthesized (tied) note.
+    With through=True the stems start right under the lowest fret number of the beat and
+    run down through the staff, touching the digit."""
     beat_w, pad = 90, 30
     lead = 10 if label is None else 140
-    width = lead + len(measures) * (4 * beat_w + pad) + 60
-    height = TOP + (strings - 1) * SPACING + 140
-    img = np.full((height, width, 3), 255, np.uint8)
-    ys = [TOP + (strings - 1 - s) * SPACING for s in range(strings)]  # string 0 at the bottom
+    width = lead + len(staves[0]) * (4 * beat_w + pad) + 60
+    staff_h = (strings - 1) * SPACING + 140
+    img = np.full((staff_h * len(staves), width, 3), 255, np.uint8)
+    for k, measures in enumerate(staves):
+        top = TOP + k * staff_h
+        _draw_staff(img, top, measures, strings, stems, final_bar, label, tuplet_in, through)
+    return img
+
+
+TIE = "tie"
+
+
+def _draw_staff(img, top, measures, strings, stems, final_bar, label, tuplet_in, through):
+    beat_w, pad = 90, 30
+    width = img.shape[1]
+    lead = 10 if label is None else 140
+    ys = [top + (strings - 1 - s) * SPACING for s in range(strings)]  # string 0 at the bottom
     x_start = 0 if label is None else lead - 6  # a track label sits left of the staff
     for y in ys:
         cv2.line(img, (x_start, y), (width - 1, y), (0, 0, 0), 1)
@@ -35,35 +66,41 @@ def draw_line(measures, strings=6, stems=True, final_bar="thin", label=None, tup
         cv2.line(img, (x, ys[-1]), (x, ys[0]), (0, 0, 0), 2)
         for k, beat in enumerate(measure):
             bx = x + pad + k * beat_w
-            for string, fret in beat:
+            lowest_digit = None
+            for string, fret in [] if beat == TIE else beat:
                 text = str(fret)
                 (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
                 y = ys[string]
+                if text.startswith("("):
+                    bx_text = bx - cv2.getTextSize("(", cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0][0]
+                else:
+                    bx_text = bx
                 cv2.rectangle(
                     img,
-                    (bx - 2, y - th // 2 - 3),
-                    (bx + tw + 2, y + th // 2 + 3),
+                    (bx_text - 2, y - th // 2 - 3),
+                    (bx_text + tw + 2, y + th // 2 + 3),
                     (255, 255, 255),
                     -1,
                 )
                 cv2.putText(
                     img,
                     text,
-                    (bx, y + th // 2),
+                    (bx_text, y + th // 2),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
                     (0, 0, 0),
                     1,
                     cv2.LINE_AA,
                 )
+                lowest_digit = max(lowest_digit or 0, y + th // 2 + 1)
+            stem_top = lowest_digit if through and lowest_digit else ys[0] + 14
             if stems and beat:
                 cx = bx + 6
-                cv2.line(img, (cx, ys[0] + 14), (cx, ys[0] + 60), (0, 0, 0), 2)
+                cv2.line(img, (cx, stem_top), (cx, ys[0] + 60), (0, 0, 0), 2)
         x += 4 * beat_w + pad
     cv2.line(img, (x, ys[-1]), (x, ys[0]), (0, 0, 0), 2)
     if final_bar == "thick":  # Guitar Pro's final bar: thin line, gap, thick line
         cv2.rectangle(img, (x + 8, ys[-1]), (x + 18, ys[0]), (0, 0, 0), -1)
-    return img
 
 
 MEASURES = [
@@ -72,13 +109,18 @@ MEASURES = [
 ]
 
 
+def only_track(song):
+    assert len(song.tracks) == 1
+    return song.tracks[0]
+
+
 def notes_of(score):
     return [[sorted((n.string, n.fret) for n in b.notes) for b in m.beats] for m in score.measures]
 
 
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
 def test_six_string_line_with_two_digit_frets_and_chords():
-    score = recognize_images([draw_line(MEASURES)])
+    score = only_track(recognize_images([draw_line(MEASURES)]))
     assert score.strings == 6
     assert score.tuning == [40, 45, 50, 55, 59, 64]
     assert notes_of(score) == [[sorted(b) for b in m] for m in MEASURES]
@@ -88,7 +130,7 @@ def test_six_string_line_with_two_digit_frets_and_chords():
 
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
 def test_line_without_rhythm_marks_still_fills_each_measure():
-    score = recognize_images([draw_line(MEASURES, stems=False)])
+    score = only_track(recognize_images([draw_line(MEASURES, stems=False)]))
     assert notes_of(score) == [[sorted(b) for b in m] for m in MEASURES]
     for m in score.measures:
         assert sum(b.length() for b in m.beats) == m.capacity()
@@ -98,25 +140,24 @@ def test_line_without_rhythm_marks_still_fills_each_measure():
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
 def test_image_without_tab_gives_empty_score():
     blank = np.full((300, 800, 3), 255, np.uint8)
-    score = recognize_images([blank])
-    assert score.measures == []
+    assert recognize_images([blank]).tracks == []
 
 
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
 def test_thick_final_bar_adds_no_measure():
-    score = recognize_images([draw_line(MEASURES, final_bar="thick")])
+    score = only_track(recognize_images([draw_line(MEASURES, final_bar="thick")]))
     assert notes_of(score) == [[sorted(b) for b in m] for m in MEASURES]
 
 
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
 def test_track_label_before_first_bar_is_not_a_measure():
-    score = recognize_images([draw_line(MEASURES, label="Gt.1")])
+    score = only_track(recognize_images([draw_line(MEASURES, label="Gt.1")]))
     assert notes_of(score) == [[sorted(b) for b in m] for m in MEASURES]
 
 
 @pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
 def test_tuplet_digit_stays_in_its_measure():
-    score = recognize_images([draw_line(MEASURES, tuplet_in=1)])
+    score = only_track(recognize_images([draw_line(MEASURES, tuplet_in=1)]))
     first = score.measures[0]
     assert [(b.duration, b.tuplet) for b in first.beats] == [(4, None)] * 4
 
@@ -157,3 +198,52 @@ def test_compare_reports_tie_accuracy_on_matched_notes():
     assert s["tie_recall"] == 50.0  # 1 of the 2 tied notes found
     assert s["tie_precision"] == 50.0  # 1 of the 2 recognized ties is right
     assert s["counts"]["ties"] == 2
+
+
+DENSE = [  # six-note chords on every beat: the rows between the lines fill up with digits
+    [[(s, f) for s, f in zip(range(6), (1, 3, 3, 2, 1, 1), strict=True)]] * 4,
+    [[(s, f) for s, f in zip(range(6), (3, 5, 5, 4, 3, 3), strict=True)]] * 4,
+]
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
+def test_two_staves_per_line_become_two_tracks():
+    song = recognize_images([draw_system([MEASURES, DENSE])] * 2)
+    assert len(song.tracks) == 2
+    top, bottom = song.tracks
+    assert notes_of(top) == [[sorted(b) for b in m] for m in MEASURES] * 2
+    assert notes_of(bottom) == [[sorted(b) for b in m] for m in DENSE] * 2
+    assert [m.number for m in top.measures] == [m.number for m in bottom.measures]
+    assert [m.line for m in bottom.measures] == [0, 0, 1, 1]
+    assert top.strings == bottom.strings == 6
+    assert top.name and bottom.name and top.name != bottom.name
+
+
+@pytest.mark.skipif(not MODEL_PATH.exists(), reason="model not trained")
+def test_dense_chord_staff_is_a_real_staff():
+    from app.omr.glyphs import gray_of
+    from app.omr.recognize import find_staves
+
+    staves = find_staves(gray_of(draw_line(DENSE)))
+    assert [len(st.lines) for st in staves] == [6]
+
+
+def test_staff_check_counts_long_runs_not_darkness():
+    """Light-grey lines; the rows halfway between them are full of short black strokes
+    (dense digits reaching them). Those rows are darker than the lines on average, but
+    only the lines are made of long horizontal runs."""
+    from app.omr.recognize import _lines_are_ink
+    from app.region import Staff
+
+    s, top = 20, 40
+    gray = np.full((top + 5 * s + 40, 900), 255, np.uint8)
+    lines = [top + i * s for i in range(6)]
+    for y in lines:
+        gray[y, :] = 185
+    for y in lines[:-1]:
+        for x in range(0, 900, 10):
+            gray[y + s // 2 - 1 : y + s // 2 + 2, x : x + 6] = 0
+    assert _lines_are_ink(gray, Staff(lines, 0, 899))
+    # the gaps between the lines, as detect_staves' inverted pass can report them
+    gaps = [y + s // 2 for y in lines[:-1]]
+    assert not _lines_are_ink(gray, Staff(gaps, 0, 899))

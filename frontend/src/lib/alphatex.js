@@ -1,4 +1,5 @@
-// Score JSON (see backend app/omr/model.py) -> alphaTex text for alphaTab.
+// Song / Score JSON (see backend app/omr/model.py) -> alphaTex text for alphaTab.
+import { toSong, trackName } from './song.js'
 import { defaultTuning, midiToName } from './tuning.js'
 
 export const DURATIONS = [1, 2, 4, 8, 16, 32]
@@ -24,7 +25,9 @@ function beatTex(score, beat) {
   else {
     const notes = beat.notes.map((n) => {
       if (!(n.string >= 0 && n.string < score.strings)) throw new Error(`弦号超出范围：${n.string}`)
-      return `${n.dead ? 'x' : n.fret}.${texString(score.strings, n.string)}`
+      // {t}: tied to the previous note on this string (alphaTab's isTieDestination)
+      const tie = n.tied && !n.dead ? '{t}' : ''
+      return `${n.dead ? 'x' : n.fret}.${texString(score.strings, n.string)}${tie}`
     })
     body = notes.length === 1 ? notes[0] : `(${notes.join(' ')})`
   }
@@ -34,19 +37,36 @@ function beatTex(score, beat) {
   return `${body}.${beat.duration}${effects.length ? `{${effects.join(' ')}}` : ''}`
 }
 
-export function scoreToTex(score) {
-  const tuning = scoreTuning(score).slice().reverse().map(midiToName).join(' ')
-  const bars = score.measures.map((m) =>
-    m.beats.length ? m.beats.map((b) => beatTex(score, b)).join(' ') : 'r.1',
-  )
+function trackTex(track, index, count, bars) {
+  const tuning = scoreTuning(track).slice().reverse().map(midiToName).join(' ')
+  const body = []
+  for (let i = 0; i < bars; i++) {
+    const m = track.measures[i]
+    body.push(m?.beats.length ? m.beats.map((b) => beatTex(track, b)).join(' ') : 'r.1')
+  }
   return [
-    `\\title ${quote(score.title || '')}`,
-    `\\tempo ${score.tempo || 120}`,
-    '.',
-    '\\track "Guitar"',
+    `\\track ${quote(track.name || trackName(index, count))}`,
     '\\staff {tabs}',
     `\\tuning (${tuning})`,
     '\\ts 4 4',
-    bars.join(' |\n'),
+    body.join(' |\n'),
   ].join('\n')
+}
+
+// Every track of the song; a shorter track is padded with rest bars so all tracks
+// have the same bars (alphaTab lays bars of all tracks out together).
+export function songToTex(data) {
+  const song = toSong(data)
+  const bars = Math.max(0, ...song.tracks.map((t) => t.measures.length))
+  return [
+    `\\title ${quote(song.title || '')}`,
+    `\\tempo ${song.tempo || 120}`,
+    '.',
+    ...song.tracks.map((t, i) => trackTex(t, i, song.tracks.length, bars)),
+  ].join('\n')
+}
+
+// A single Score (one track).
+export function scoreToTex(score) {
+  return songToTex(score)
 }

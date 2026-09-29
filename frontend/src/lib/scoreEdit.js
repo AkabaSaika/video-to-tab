@@ -22,21 +22,36 @@ function restBeat(duration, x) {
 }
 
 // value: null (no note on this string), 'x' (dead note) or a fret number 0..MAX_FRET
+// A changed fret keeps the note's tie; a dead note is never tied.
 export function setFret(score, m, b, string, value) {
-  let note = null
-  if (value === 'x') note = { string, fret: 0, confidence: 1, dead: true }
-  else if (value !== null) {
+  if (value !== null && value !== 'x') {
     if (!Number.isInteger(value) || value < 0 || value > MAX_FRET) {
       throw new RangeError(`品格应为 0–${MAX_FRET} 的整数`)
     }
-    note = { string, fret: value, confidence: 1, dead: false }
   }
   return updateBeat(score, m, b, (beat) => {
+    const old = beat.notes.find((n) => n.string === string)
+    let note = null
+    if (value === 'x') note = { string, fret: 0, confidence: 1, dead: true, tied: false }
+    else if (value !== null) {
+      note = { string, fret: value, confidence: 1, dead: false, tied: !!old?.tied }
+    }
     const notes = beat.notes.filter((n) => n.string !== string)
     if (note) notes.push(note)
     notes.sort((p, q) => p.string - q.string)
     return { ...beat, notes, rest: notes.length === 0 }
   })
+}
+
+// Tie (or untie) the note on `string` to the previous note on the same string ("延音").
+// Without a note on that string there is nothing to tie: the score is returned as is.
+export function toggleTie(score, m, b, string) {
+  const beat = score.measures[m]?.beats[b]
+  if (!beat?.notes.some((n) => n.string === string && !n.dead)) return score
+  return updateBeat(score, m, b, (bt) => ({
+    ...bt,
+    notes: bt.notes.map((n) => (n.string === string ? { ...n, tied: !n.tied } : n)),
+  }))
 }
 
 export function setDuration(score, m, b, duration) {
@@ -149,5 +164,25 @@ export function nextToReview(score, from) {
   )
   if (!from) return flagged[0] ?? null
   const after = flagged.find((p) => p.m > from.m || (p.m === from.m && p.b > from.b))
+  return after ?? flagged[0] ?? null
+}
+
+// The next flagged beat after `from` ({t, m, b} or null), in track, measure, beat order,
+// wrapping around; null when nothing is flagged.
+export function nextInSong(song, from) {
+  const flagged = []
+  song.tracks.forEach((track, t) =>
+    track.measures.forEach((measure, m) =>
+      measure.beats.forEach((beat, b) => {
+        if (needsReview(measure, beat)) flagged.push({ t, m, b })
+      }),
+    ),
+  )
+  if (!from) return flagged[0] ?? null
+  const key = (p) => [p.t, p.m, p.b]
+  const after = flagged.find((p) => {
+    const [a, c] = [key(p), key(from)]
+    return a[0] > c[0] || (a[0] === c[0] && (a[1] > c[1] || (a[1] === c[1] && a[2] > c[2])))
+  })
   return after ?? flagged[0] ?? null
 }

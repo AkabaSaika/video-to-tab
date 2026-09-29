@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { scoreToTex, texString } from './alphatex.js'
+import { scoreToTex, songToTex, texString } from './alphatex.js'
 
 const note = (string, fret, extra = {}) => ({ string, fret, confidence: 1, dead: false, ...extra })
 const beat = (notes, extra = {}) => ({
@@ -75,5 +75,56 @@ describe('scoreToTex', () => {
   it('refuses data alphaTab would misread', () => {
     expect(() => scoreToTex(score7([measure([beat([note(7, 1)])])]))).toThrow('弦号')
     expect(() => scoreToTex(score7([measure([beat([note(0, 1)], { duration: 3 })])]))).toThrow('时值')
+  })
+})
+
+describe('songToTex', () => {
+  const song = (tracks, extra = {}) => ({ title: 'S', tempo: 180, tracks, ...extra })
+
+  it('writes one \\track per song track with its own name, tuning and bars', () => {
+    const gt1 = { ...score7([measure([beat([note(0, 3)])])]), name: 'Gt.1' }
+    const gt2 = {
+      strings: 6,
+      tuning: [38, 45, 50, 55, 59, 64],
+      name: 'Gt.2',
+      measures: [measure([beat([note(5, 0)])])],
+    }
+    const tex = songToTex(song([gt1, gt2]))
+    expect(tex.split('\n').slice(0, 3)).toEqual(['\\title "S"', '\\tempo 180', '.'])
+    const parts = tex.split('\\track ').slice(1)
+    expect(parts).toHaveLength(2)
+    expect(parts[0]).toBe(
+      '"Gt.1"\n\\staff {tabs}\n\\tuning (E4 B3 G3 D3 A2 E2 A1)\n\\ts 4 4\n3.7.4\n',
+    )
+    expect(parts[1]).toBe('"Gt.2"\n\\staff {tabs}\n\\tuning (E4 B3 G3 D3 A2 D2)\n\\ts 4 4\n0.1.4')
+  })
+
+  it('names unnamed tracks and pads a shorter track with rest bars', () => {
+    const a = score7([measure([beat([note(0, 3)])]), measure([])])
+    const b = score7([measure([beat([note(0, 5)])])])
+    const tex = songToTex(song([a, b]))
+    expect(tex).toContain('\\track "Guitar 1"')
+    expect(tex).toContain('\\track "Guitar 2"')
+    expect(tex.endsWith('5.7.4 |\nr.1')).toBe(true)
+  })
+
+  it('writes tied notes with the note effect {t}, never on a dead note', () => {
+    const tex = songToTex(
+      song([
+        score7([
+          measure([
+            beat([note(2, 14)], { duration: 2 }),
+            beat([note(2, 14, { tied: true })], { duration: 8 }),
+            beat([note(0, 5), note(1, 7, { tied: true })], { duration: 8 }),
+            beat([note(0, 0, { dead: true, tied: true })], { duration: 4 }),
+          ]),
+        ]),
+      ]),
+    )
+    expect(tex.split('\\ts 4 4\n')[1]).toBe('14.5.2 14.5{t}.8 (5.7 7.6{t}).8 x.7.4')
+  })
+
+  it('scoreToTex still takes a single Score', () => {
+    expect(scoreToTex(score7([measure([beat([note(0, 3)])])]))).toContain('\\track "Guitar"')
   })
 })

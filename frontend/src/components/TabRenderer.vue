@@ -1,27 +1,27 @@
 <script setup>
-// alphaTab wrapper: renders a Score, marks beats that need review and the selected beat,
-// and reports clicks as { m, b } (measure and beat indices of the Score).
+// alphaTab wrapper: renders every track of a Song, marks beats that need review and the
+// selected beat, and reports clicks as { t, m, b } (track, measure and beat indices).
 import * as alphaTab from '@coderline/alphatab'
 import bravuraWoff from '@coderline/alphatab/font/Bravura.woff?url'
 import bravuraWoff2 from '@coderline/alphatab/font/Bravura.woff2?url'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { scoreToTex } from '../lib/alphatex.js'
+import { songToTex } from '../lib/alphatex.js'
 import { needsReview } from '../lib/scoreEdit.js'
 
 const props = defineProps({
-  score: { type: Object, required: true },
+  song: { type: Object, required: true },
   selected: { type: Object, default: null },
 })
 const emit = defineEmits(['select', 'error', 'rendered'])
 
 const wrap = ref(null)
 const host = ref(null)
-const boxes = shallowRef(new Map()) // "m:b" -> { left, top, width, height } in px
+const boxes = shallowRef(new Map()) // "t:m:b" -> { x, y, w, h } in px
 const rendering = ref(true)
 let api = null
 
-function key(m, b) {
-  return `${m}:${b}`
+function key(t, m, b) {
+  return `${t}:${m}:${b}`
 }
 
 function style(box) {
@@ -30,21 +30,25 @@ function style(box) {
 
 const flagged = computed(() => {
   const out = []
-  props.score.measures.forEach((measure, m) =>
-    measure.beats.forEach((beat, b) => {
-      const box = boxes.value.get(key(m, b))
-      if (box && needsReview(measure, beat)) out.push({ id: key(m, b), style: style(box) })
-    }),
+  props.song.tracks.forEach((track, t) =>
+    track.measures.forEach((measure, m) =>
+      measure.beats.forEach((beat, b) => {
+        const box = boxes.value.get(key(t, m, b))
+        if (box && needsReview(measure, beat)) out.push({ id: key(t, m, b), style: style(box) })
+      }),
+    ),
   )
   return out
 })
 
 const selectedBox = computed(() => {
-  const box = props.selected && boxes.value.get(key(props.selected.m, props.selected.b))
+  const sel = props.selected
+  const box = sel && boxes.value.get(key(sel.t, sel.m, sel.b))
   return box ? style(box) : null
 })
 
-// Beat columns in wrapper coordinates: x/width from the beat, y/height from its bar.
+// Beat columns in wrapper coordinates: x/width from the beat, y/height from its bar
+// (each track's bar is its own staff, so the columns of the tracks do not overlap).
 function collectBounds() {
   const lookup = api.renderer.boundsLookup
   const surface = host.value.querySelector('.at-surface')
@@ -54,14 +58,16 @@ function collectBounds() {
   const dx = inner.left - outer.left
   const dy = inner.top - outer.top
   const map = new Map()
-  api.score.tracks[0].staves[0].bars.forEach((bar, m) =>
-    bar.voices[0].beats.forEach((beat, i) => {
-      const bounds = lookup.findBeat(beat)
-      if (!bounds) return
-      const r = bounds.realBounds
-      const col = bounds.barBounds.realBounds
-      map.set(key(m, i), { x: r.x + dx, y: col.y + dy, w: r.w, h: col.h })
-    }),
+  api.score.tracks.forEach((track, t) =>
+    track.staves[0].bars.forEach((bar, m) =>
+      bar.voices[0].beats.forEach((beat, i) => {
+        const bounds = lookup.findBeat(beat)
+        if (!bounds) return
+        const r = bounds.realBounds
+        const col = bounds.barBounds.realBounds
+        map.set(key(t, m, i), { x: r.x + dx, y: col.y + dy, w: r.w, h: col.h })
+      }),
+    ),
   )
   boxes.value = map
 }
@@ -69,7 +75,11 @@ function collectBounds() {
 function render() {
   rendering.value = true
   try {
-    api.tex(scoreToTex(props.score))
+    // all tracks: alphaTab shows only the first one unless told otherwise
+    api.tex(
+      songToTex(props.song),
+      props.song.tracks.map((_, i) => i),
+    )
   } catch (e) {
     rendering.value = false
     emit('error', e.message)
@@ -94,7 +104,9 @@ onMounted(() => {
     rendering.value = false
     emit('rendered')
   })
-  api.beatMouseDown.on((beat) => emit('select', { m: beat.voice.bar.index, b: beat.index }))
+  api.beatMouseDown.on((beat) =>
+    emit('select', { t: beat.voice.bar.staff.track.index, m: beat.voice.bar.index, b: beat.index }),
+  )
   api.error.on((e) => {
     rendering.value = false
     emit('error', e?.message || String(e))
@@ -104,7 +116,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => api?.destroy())
 
-watch(() => props.score, render)
+watch(() => props.song, render)
 
 // keep the selected beat in view (e.g. after "下一个待检查")
 watch(

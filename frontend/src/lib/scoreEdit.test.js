@@ -11,6 +11,7 @@ import {
   setFret,
   toggleDot,
   toggleRest,
+  toggleTie,
   toggleTriplet,
 } from './scoreEdit.js'
 
@@ -70,13 +71,41 @@ describe('scoreEdit', () => {
       [4, 12],
     ])
     t = setFret(t, 0, 1, 2, 9)
-    expect(t.measures[0].beats[1].notes[1]).toEqual({ string: 2, fret: 9, confidence: 1, dead: false })
+    expect(t.measures[0].beats[1].notes[1]).toEqual({
+      string: 2,
+      fret: 9,
+      confidence: 1,
+      dead: false,
+      tied: false,
+    })
     t = setFret(t, 0, 1, 1, 'x')
-    expect(t.measures[0].beats[1].notes[0]).toEqual({ string: 1, fret: 0, confidence: 1, dead: true })
+    expect(t.measures[0].beats[1].notes[0]).toEqual({
+      string: 1,
+      fret: 0,
+      confidence: 1,
+      dead: true,
+      tied: false,
+    })
     t = setFret(s, 0, 0, 0, null)
     expect(t.measures[0].beats[0]).toMatchObject({ notes: [], rest: true })
     t = setFret(s, 0, 2, 3, 0)
-    expect(t.measures[0].beats[2]).toMatchObject({ notes: [note(3, 0)], rest: false })
+    expect(t.measures[0].beats[2]).toMatchObject({ notes: [{ ...note(3, 0), tied: false }], rest: false })
+    expect(s).toEqual(sample())
+  })
+
+  it('toggleTie ties and unties the note on one string', () => {
+    const s = frozen()
+    const t = toggleTie(s, 0, 1, 2)
+    expect(t.measures[0].beats[1].notes.map((n) => [n.string, !!n.tied])).toEqual([
+      [1, false],
+      [2, true],
+    ])
+    expect(t.measures[0].beats[0]).toBe(s.measures[0].beats[0])
+    expect(toggleTie(t, 0, 1, 2).measures[0].beats[1].notes[1].tied).toBe(false)
+    expect(toggleTie(s, 0, 1, 4)).toEqual(s) // no note on that string: nothing to tie
+    // changing the fret keeps the tie; muting drops it
+    expect(setFret(t, 0, 1, 2, 9).measures[0].beats[1].notes[1].tied).toBe(true)
+    expect(setFret(t, 0, 1, 2, 'x').measures[0].beats[1].notes[1].tied).toBe(false)
     expect(s).toEqual(sample())
   })
 

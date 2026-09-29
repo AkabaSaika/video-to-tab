@@ -13,7 +13,7 @@ from app.export import export_pdf, export_png
 from app.frames import grab_frames, probe
 from app.jobs import Job, JobStore, Status, write_atomic
 from app.models import Roi
-from app.omr.model import Score, pad_numbers
+from app.omr.model import Song, pad_numbers
 from app.omr.recognize import recognize_images
 from app.pipeline import AnalyzeParams, analyze
 from app.region import detect_region
@@ -98,8 +98,8 @@ def page_images(job: Job, order: list[int]) -> list:
     return images
 
 
-def save_score(job: Job, score: Score) -> None:
-    text = json.dumps(score.to_dict(), ensure_ascii=False)
+def save_score(job: Job, song: Song) -> None:
+    text = json.dumps(song.to_dict(), ensure_ascii=False)
     write_atomic(job.dir / "score.json", text)
 
 
@@ -107,12 +107,13 @@ def recognize(store: JobStore, job: Job, order: list[int]) -> None:
     """Read the tab from the pages in `order`; Measure.line indexes into `order`."""
     store.update(job, status=Status.RECOGNIZING, stage="recognize", progress=0.0, error=None)
     images = page_images(job, order)
-    score = recognize_images(images, progress=lambda f: store.update(job, progress=f))
-    if not score.measures:
+    song = recognize_images(images, progress=lambda f: store.update(job, progress=f))
+    if not any(t.measures for t in song.tracks):
         raise ValueError("没有识别到谱表")
-    score = pad_numbers(score)  # bar k of the editor and the export is measure k
-    score.title = job.title  # keep a title the user already typed
-    save_score(job, score)
+    # bar k of the editor and the export is measure k; every track is padded alike
+    song.tracks = [pad_numbers(t) for t in song.tracks]
+    song.title = job.title  # keep a title the user already typed
+    save_score(job, song)
     by_id = {p["id"]: p["file"] for p in job.pages}
     store.update(
         job,

@@ -1,9 +1,10 @@
 """Score recognition against a Guitar Pro file.
 
-    python -m app.omr.evaluate VIDEO_OR_PAGE_DIR GP --track NAME [--from N --to M]
+    python -m app.omr.evaluate VIDEO_OR_PAGE_DIR GP --track NAME [--from N --to M] [--staff K]
 
 VIDEO_OR_PAGE_DIR is a video (the existing pipeline runs first) or a directory of
-line images (page_*.png as written by `app.cli`). Measures are aligned by recognized
+line images (page_*.png as written by `app.cli`). Staff K of every line (0 = top) is
+the recognized track compared with the GP track. Measures are aligned by recognized
 measure number; beats inside a measure are aligned by a DP that maximizes shared notes.
 """
 
@@ -22,7 +23,7 @@ import numpy as np
 from app.omr.glyphs import MODEL_PATH, GlyphClassifier
 from app.omr.gpif import read_track
 from app.omr.model import Beat, Measure, Score
-from app.omr.recognize import build_score, number_measures, recognize_lines
+from app.omr.recognize import build_song, number_measures, recognize_lines
 
 
 def load_images(src: Path) -> list[np.ndarray]:
@@ -256,18 +257,22 @@ def run(
     first: int | None,
     show: int,
     model: Path = MODEL_PATH,
+    staff: int = 0,
 ) -> dict:
     t0 = time.time()
     images = load_images(src)
     t1 = time.time()
     clf = GlyphClassifier.load(model)
-    lines, strings = recognize_lines(images, clf)
-    score = build_score(lines, strings)
+    pages, strings = recognize_lines(images, clf)
+    song = build_song(pages, strings)
+    if not 0 <= staff < len(song.tracks):
+        raise SystemExit(f"--staff {staff}: the lines have {len(song.tracks)} staves")
+    score = song.tracks[staff]
     t2 = time.time()
     gt = read_track(gp, track)
     rep = compare(gt, score, lo, hi)
     out = rep.summary()
-    raw = [m for ln in lines for m in ln.measures]
+    raw = [m for page in pages for m in page[0].measures]
     numbers = number_measures(raw)
     read = [m.number for m in raw]
     out["numbering"] = {
@@ -303,8 +308,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--show", type=int, default=15, help="worst measures to list")
     parser.add_argument("--json", type=Path, help="write the full report here")
     parser.add_argument("--model", type=Path, default=MODEL_PATH)
+    parser.add_argument("--staff", type=int, default=0, help="staff of each line (0 = top)")
     args = parser.parse_args(argv)
-    out = run(args.source, args.gp, args.track, args.lo, args.hi, args.first, args.show, args.model)
+    out = run(
+        args.source,
+        args.gp,
+        args.track,
+        args.lo,
+        args.hi,
+        args.first,
+        args.show,
+        args.model,
+        args.staff,
+    )
     if args.json:
         args.json.write_text(json.dumps(out, indent=1, ensure_ascii=False))
     worst = out.pop("worst")

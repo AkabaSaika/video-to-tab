@@ -1,7 +1,7 @@
 // Round trip in Node: Score -> alphaTex -> alphaTab -> Gp7Exporter bytes -> ScoreLoader.
 import * as alphaTab from '@coderline/alphatab'
 import { describe, expect, it } from 'vitest'
-import { scoreToTex } from './alphatex.js'
+import { scoreToTex, songToTex } from './alphatex.js'
 
 const note = (string, fret, dead = false) => ({ string, fret, confidence: 1, dead })
 const beat = (notes, duration, extra = {}) => ({
@@ -85,5 +85,88 @@ describe('alphaTab round trip', () => {
     expect(back.title).toBe('KiLLKiSS 测试')
     expect(back.tempo).toBe(200)
     expect(back.tracks[0].staves[0].stringTuning.tunings).toEqual([64, 59, 55, 50, 45, 40, 33])
+  })
+})
+
+// Two tracks with ties (a held note, a tied chord), different string counts and tunings.
+const SONG = {
+  title: 'Ties',
+  tempo: 180,
+  tracks: [
+    {
+      name: 'Gt.1',
+      strings: 6,
+      tuning: [40, 45, 50, 55, 59, 64],
+      measures: [
+        measure([
+          beat([note(3, 14)], 2),
+          beat([{ ...note(3, 14), tied: true }], 8),
+          beat([note(3, 12)], 4),
+          beat([note(3, 14)], 8),
+        ]),
+        measure([beat([{ ...note(3, 14), tied: true }], 8), beat([note(2, 12)], 8), beat([], 4), beat([], 2)]),
+      ],
+    },
+    {
+      name: 'Gt.2',
+      strings: 7,
+      tuning: [33, 40, 45, 50, 55, 59, 64],
+      measures: [
+        measure([
+          beat([], 8),
+          beat([note(0, 1), note(1, 3), note(2, 3)], 8),
+          beat([], 8),
+          beat([note(0, 1), note(1, 3), note(2, 3)], 8),
+          beat([0, 1, 2].map((s) => ({ ...note(s, [1, 3, 3][s]), tied: true })), 8),
+          beat([note(0, 1), note(1, 3), note(2, 3)], 8),
+          beat([note(0, 1), note(1, 3), note(2, 3)], 4),
+        ]),
+        measure([]),
+      ],
+    },
+  ],
+}
+
+function songSummary(score) {
+  return score.tracks.map((t) => ({
+    name: t.name,
+    tuning: t.staves[0].stringTuning.tunings,
+    bars: t.staves[0].bars.map((bar) =>
+      bar.voices[0].beats.map((b) => ({
+        duration: b.duration,
+        rest: b.isRest,
+        notes: b.notes.map((n) => [n.string - 1, n.fret, n.isTieDestination]).sort(),
+      })),
+    ),
+  }))
+}
+
+function songExpected(song) {
+  return song.tracks.map((t) => ({
+    name: t.name,
+    tuning: t.tuning.slice().reverse(),
+    bars: t.measures.map((m) =>
+      (m.beats.length ? m.beats : [beat([], 1)]).map((b) => ({
+        duration: b.duration,
+        rest: b.rest,
+        notes: b.notes.map((n) => [n.string, n.fret, !!n.tied]).sort(),
+      })),
+    ),
+  }))
+}
+
+describe('alphaTab round trip of a song', () => {
+  it('exports every track, with ties, to one .gp file', () => {
+    const settings = new alphaTab.Settings()
+    const importer = new alphaTab.importer.AlphaTexImporter()
+    importer.initFromString(songToTex(SONG), settings)
+    const imported = importer.readScore()
+    expect(songSummary(imported)).toEqual(songExpected(SONG))
+
+    const bytes = new alphaTab.exporter.Gp7Exporter().export(imported, settings)
+    const back = alphaTab.importer.ScoreLoader.loadScoreFromBytes(bytes, settings)
+    expect(songSummary(back)).toEqual(songExpected(SONG))
+    expect(back.title).toBe('Ties')
+    expect(back.tempo).toBe(180)
   })
 })

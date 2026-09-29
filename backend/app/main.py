@@ -16,7 +16,7 @@ from app import workflow
 from app.frames import DecodeError, frame_at
 from app.jobs import Job, JobStore, Status
 from app.models import Roi
-from app.omr.model import Score
+from app.omr.model import Song
 from app.pipeline import AnalyzeParams
 from app.source import VIDEO_EXTS, SourceError, normalize_url, save_upload
 
@@ -136,7 +136,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         path = job.dir / "score.json"
         if not path.is_file():
             raise HTTPException(404, "还没有识谱结果")
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        try:  # score.json from before multi-track support holds a single Score
+            return Song.from_dict(data).to_dict()
+        except ValueError:
+            return data
 
     @app.put("/api/jobs/{job_id}/score")
     def write_score(job_id: str, body: Annotated[Any, Body()]) -> dict:
@@ -146,12 +150,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not (job.dir / "score.json").is_file():
             raise HTTPException(404, "还没有识谱结果")
         try:
-            score = Score.from_dict(body)
+            song = Song.from_dict(body)
         except ValueError as exc:
             raise HTTPException(422, f"乐谱数据不合法：{exc}") from exc
-        workflow.save_score(job, score)
-        if score.title != job.title:
-            store.update(job, title=score.title)
+        workflow.save_score(job, song)
+        if song.title != job.title:
+            store.update(job, title=song.title)
         return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/export")

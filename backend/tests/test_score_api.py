@@ -39,11 +39,13 @@ def test_recognize_writes_score_and_moves_to_ready_for_score(tmp_path, synth_vid
     assert job["score_order"] == order
     assert job["progress"] == 1.0
 
-    score = client.get(f"/api/jobs/{job['id']}/score").json()
-    assert score["strings"] == 6 and score["title"] == ""
+    song = client.get(f"/api/jobs/{job['id']}/score").json()
+    assert song["title"] == "" and len(song["tracks"]) == 1
+    score = song["tracks"][0]
+    assert score["strings"] == 6 and score["name"]
     assert [m["line"] for m in score["measures"]] == [0, 1]
     assert all(m["beats"] for m in score["measures"])
-    assert json.loads((tmp_path / job["id"] / "score.json").read_text()) == score
+    assert json.loads((tmp_path / job["id"] / "score.json").read_text()) == song
 
     # recognizing again is allowed from ready_for_score
     r = client.post(f"/api/jobs/{job['id']}/recognize", json={"order": [0]})
@@ -107,15 +109,65 @@ def wait_for_status(client, job_id, status, timeout=30):
     raise AssertionError(f"timed out waiting for {status}")
 
 
-def scored_job(app):
+OLD_SCORE = {  # score.json as written before multi-track support: a single Score
+    "strings": 6,
+    "tuning": [40, 45, 50, 55, 59, 64],
+    "title": "旧谱",
+    "measures": [{"beats": [{"duration": 1, "notes": [{"string": 0, "fret": 3}]}]}],
+}
+
+
+def scored_job(app, data=None):
     job = blank_job(app, Status.READY_FOR_SCORE)
-    score = {
-        "strings": 6,
-        "tuning": [40, 45, 50, 55, 59, 64],
-        "measures": [{"beats": [{"duration": 1, "notes": [{"string": 0, "fret": 3}]}]}],
+    song = data or {
+        "title": "",
+        "tracks": [
+            {
+                "name": "Gt.1",
+                "strings": 6,
+                "tuning": [40, 45, 50, 55, 59, 64],
+                "measures": [{"beats": [{"duration": 1, "notes": [{"string": 0, "fret": 3}]}]}],
+            }
+        ],
     }
-    (job.dir / "score.json").write_text(json.dumps(score))
+    (job.dir / "score.json").write_text(json.dumps(song))
     return job
+
+
+def test_old_single_score_json_is_served_as_a_one_track_song(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    job = scored_job(app, OLD_SCORE)
+    song = client.get(f"/api/jobs/{job.id}/score").json()
+    assert song["title"] == "旧谱" and song["tempo"] is None
+    assert len(song["tracks"]) == 1
+    track = song["tracks"][0]
+    assert track["strings"] == 6 and track["tuning"] == OLD_SCORE["tuning"]
+    assert track["measures"][0]["beats"][0]["notes"][0]["fret"] == 3
+    assert track["measures"][0]["beats"][0]["notes"][0]["tied"] is False
+    # an old client saving a single Score still works
+    r = client.put(f"/api/jobs/{job.id}/score", json={**OLD_SCORE, "title": "改"})
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/jobs/{job.id}/score").json()["tracks"][0]["strings"] == 6
+
+
+def test_put_song_with_two_tracks_and_ties(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    job = scored_job(app)
+    url = f"/api/jobs/{job.id}/score"
+    song = client.get(url).json()
+    second = json.loads(json.dumps(song["tracks"][0]))
+    second["name"] = "Gt.2"
+    second["measures"][0]["beats"][0]["notes"][0]["tied"] = True
+    song["tracks"].append(second)
+    assert client.put(url, json=song).status_code == 200
+    saved = client.get(url).json()
+    assert [t["name"] for t in saved["tracks"]] == ["Gt.1", "Gt.2"]
+    assert saved["tracks"][1]["measures"][0]["beats"][0]["notes"][0]["tied"] is True
+    bad = {**song, "tracks": [{"strings": "6"}]}
+    r = client.put(url, json=bad)
+    assert r.status_code == 422 and "tracks[0].strings" in r.json()["detail"]
 
 
 def test_put_score_validates_and_writes_atomically(tmp_path):
@@ -127,17 +179,18 @@ def test_put_score_validates_and_writes_atomically(tmp_path):
     score = client.get(url).json()
     score["title"] = "我的谱"
     score["tempo"] = 180
-    score["measures"][0]["beats"][0]["notes"][0]["fret"] = 5
+    score["tracks"][0]["measures"][0]["beats"][0]["notes"][0]["fret"] = 5
     r = client.put(url, json=score)
     assert r.status_code == 200, r.text
     saved = client.get(url).json()
     assert saved["title"] == "我的谱" and saved["tempo"] == 180
-    assert saved["measures"][0]["beats"][0]["notes"][0]["fret"] == 5
-    assert saved["measures"][0]["beats"][0]["confidence"] == 1.0  # normalized with defaults
+    beat = saved["tracks"][0]["measures"][0]["beats"][0]
+    assert beat["notes"][0]["fret"] == 5
+    assert beat["confidence"] == 1.0  # normalized with defaults
     assert client.get(f"/api/jobs/{job.id}").json()["title"] == "我的谱"
     assert sorted(p.name for p in job.dir.iterdir()) == ["pages", "score.json", "state.json"]
 
-    bad = {**score, "measures": [{"beats": [{"duration": "4"}]}]}
+    bad = {**score, "tracks": [{"measures": [{"beats": [{"duration": "4"}]}]}]}
     r = client.put(url, json=bad)
     assert r.status_code == 422
     assert r.json()["detail"].startswith("乐谱数据不合法")
@@ -233,10 +286,14 @@ def test_restart_through_the_api(tmp_path, synth_video):
 
 
 def test_recognize_pads_measure_numbers(tmp_path, monkeypatch):
-    from app.omr.model import Beat, Measure, Score
+    from app.omr.model import Beat, Measure, Score, Song
 
     def fake(images, progress=None):
-        return Score(6, [], None, [Measure(n, beats=[Beat(4)]) for n in (3, 5)])
+        tracks = [
+            Score(6, [], None, [Measure(n, beats=[Beat(4)]) for n in (3, 5)], name=name)
+            for name in ("Guitar 1", "Guitar 2")
+        ]
+        return Song("", None, tracks)
 
     monkeypatch.setattr("app.workflow.recognize_images", fake)
     app = create_app(tmp_path)
@@ -244,10 +301,12 @@ def test_recognize_pads_measure_numbers(tmp_path, monkeypatch):
     job = blank_job(app)
     client.post(f"/api/jobs/{job.id}/recognize", json={"order": [0]})
     wait_for_status(client, job.id, "ready_for_score")
-    score = client.get(f"/api/jobs/{job.id}/score").json()
-    assert [m["number"] for m in score["measures"]] == [1, 2, 3, 4, 5]
-    assert [m["line"] for m in score["measures"]] == [-1, -1, 0, -1, 0]
-    assert [m["confidence"] for m in score["measures"]] == [1.0, 1.0, 1.0, 0.0, 1.0]
+    song = client.get(f"/api/jobs/{job.id}/score").json()
+    assert len(song["tracks"]) == 2
+    for score in song["tracks"]:
+        assert [m["number"] for m in score["measures"]] == [1, 2, 3, 4, 5]
+        assert [m["line"] for m in score["measures"]] == [-1, -1, 0, -1, 0]
+        assert [m["confidence"] for m in score["measures"]] == [1.0, 1.0, 1.0, 0.0, 1.0]
 
 
 def test_recognize_records_page_files_that_reanalysis_replaces(tmp_path, synth_video):

@@ -25,7 +25,7 @@ from app.omr.glyphs import (
     otsu_ink,
     staff_ink,
 )
-from app.omr.model import STANDARD_TUNINGS, Beat, Measure, Note, Score
+from app.omr.model import STANDARD_TUNINGS, Beat, Measure, Note, Score, Song
 from app.omr.rhythm import BeatMarks, read_rhythm, stem_positions
 from app.omr.solve import BeatEvidence
 from app.region import Staff, detect_staves
@@ -81,35 +81,63 @@ def staff_candidates(gray: np.ndarray) -> list[Staff]:
     return found
 
 
+LINE_RUN = 0.7  # min length (in s) of a horizontal ink run that counts as staff line
+MIN_LINE_COVER = 0.15  # min share of a line row covered by such runs
+
+
 def _lines_are_ink(gray: np.ndarray, staff: Staff) -> bool:
     """Reject 'staves' made of the gaps between real lines: detect_staves also tries the
     inverted image, where the background bands between lines can look like evenly spaced
-    lines. Every real line row is clearly darker than the rows halfway to its neighbours.
-    Darkness is relative to the background, so thin light-grey lines still count."""
+    lines. A real line row is largely covered by long horizontal runs of ink (the line
+    between numbers); the rows halfway between lines are not, even when dense chords put
+    many digit strokes there, because digit strokes are short. Ink is found with a local
+    threshold, so thin light-grey lines count too."""
     g = 255 - gray if np.median(gray) < 128 else gray  # dark theme: make lines dark
-    darkness = 255.0 - g[:, staff.x0 : staff.x1 + 1].mean(axis=1)
+    s = staff.spacing
+    y0 = max(0, int(staff.lines[0] - s))
+    y1 = min(g.shape[0], int(staff.lines[-1] + s) + 1)
+    crop = np.ascontiguousarray(g[y0:y1, staff.x0 : staff.x1 + 1])
+    if crop.shape[0] < 3 or crop.shape[1] < 3:
+        return False
+    ink = cv2.adaptiveThreshold(crop, 1, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 10)
+    k = max(9, int(round(LINE_RUN * s)))
+    runs = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1)))
+    cover = runs.mean(axis=1)
 
-    def dark(y: float) -> float:
-        y = int(round(y))
-        rows = darkness[max(0, y - 1) : y + 2]
+    def at(y: float) -> float:
+        y = int(round(y)) - y0
+        rows = cover[max(0, y - 1) : y + 2]
         return float(rows.max()) if rows.size else 0.0
 
     lines = staff.lines
     mids = [(a + b) / 2 for a, b in zip(lines, lines[1:], strict=False)]
-    # median, not max: dense chords can darken a few in-between rows
-    typical_gap = float(np.median([dark(y) for y in mids]))
-    return min(dark(y) for y in lines) - typical_gap >= 8
+    line_cover = min(at(y) for y in lines)
+    return line_cover >= MIN_LINE_COVER and float(np.median([at(y) for y in mids])) < 0.5 * (
+        line_cover
+    )
 
 
-def pick_staff(gray: np.ndarray, strings: int | None = None) -> Staff | None:
-    """The staff with the requested number of lines if there is one, else the most lines;
-    ties go to the lowest staff."""
+def _overlap(a: Staff, b: Staff) -> bool:
+    return a.lines[0] <= b.lines[-1] and b.lines[0] <= a.lines[-1]
+
+
+def find_staves(gray: np.ndarray, strings: int | None = None) -> list[Staff]:
+    """All tab staves of a line image, top to bottom: the verified staves with the
+    requested number of lines if there are any, else those with the most lines. The
+    same staff found at several coverages counts once (the most evenly spaced one)."""
     found = staff_candidates(gray)
-    if strings is not None and any(len(st.lines) == strings for st in found):
-        found = [st for st in found if len(st.lines) == strings]
     if not found:
-        return None
-    return max(found, key=lambda st: (len(st.lines), -np.std(np.diff(st.lines)), st.lines[0]))
+        return []
+    counts = {len(st.lines) for st in found}
+    n = strings if strings in counts else max(counts)
+    found = sorted(
+        (st for st in found if len(st.lines) == n), key=lambda st: np.std(np.diff(st.lines))
+    )
+    kept: list[Staff] = []
+    for st in found:
+        if not any(_overlap(st, k) for k in kept):
+            kept.append(st)
+    return sorted(kept, key=lambda st: st.lines[0])
 
 
 def bar_extents(gray: np.ndarray, staff: Staff) -> list[tuple[int, int]]:
@@ -389,17 +417,16 @@ class RawMeasure:
     number_conf: float
 
 
-def recognize_line(
-    img: np.ndarray,
+def recognize_staff(
+    gray: np.ndarray,
+    staff: Staff,
     line: int = 0,
     clf: GlyphClassifier | None = None,
-    strings: int | None = None,
-) -> LineResult | None:
+    numbers: bool = True,
+) -> LineResult:
+    """One tab staff of a line image. Measure numbers are read above the staff only when
+    `numbers` is set (Guitar Pro prints them above the top staff of a system)."""
     clf = clf or default_classifier()
-    gray = gray_of(img)
-    staff = pick_staff(gray, strings)
-    if staff is None:
-        return None
     s = staff.spacing
     extents = bar_extents(gray, staff)
     bars = [a for a, _ in extents]
@@ -410,7 +437,7 @@ def recognize_line(
     raw_ink = (gray < INK_LEVEL).astype(np.uint8)
 
     measures = []
-    spans = measure_spans(bars, img.shape[1], s)
+    spans = measure_spans(bars, gray.shape[1], s)
     for i, (x0, x1) in enumerate(spans):
         mf = [f for f in frets if x0 < f.x < x1]
         mr = [r for r in rests if x0 < r.x < x1]
@@ -431,10 +458,25 @@ def recognize_line(
                 groups.append(BeatGroup(x, [], None, hidden=True))
         groups.sort(key=lambda g: g.x)
         marks = read_rhythm(raw_ink, staff, [g.x for g in groups], (x0, x1), clf)
-        num, conf = read_measure_number(gray, staff, x0, clf) if x0 in bars else (None, 0.0)
+        num, conf = (None, 0.0)
+        if numbers and x0 in bars:
+            num, conf = read_measure_number(gray, staff, x0, clf)
         measures.append(RawMeasure(line, int(x0), int(x1), groups, marks, num, conf))
     debug = {"glyphs": glyphs, "circles": circles, "frets": frets, "rests": rests}
     return LineResult(staff, bars, measures, debug)
+
+
+def recognize_line(
+    img: np.ndarray,
+    line: int = 0,
+    clf: GlyphClassifier | None = None,
+    strings: int | None = None,
+) -> list[LineResult]:
+    """Every tab staff of one line image, top to bottom (staff k = track k)."""
+    clf = clf or default_classifier()
+    gray = gray_of(img)
+    staves = find_staves(gray, strings)
+    return [recognize_staff(gray, st, line, clf, numbers=k == 0) for k, st in enumerate(staves)]
 
 
 NUMBER_JUMP = 2.5  # cost of a numbering discontinuity (missing or repeated measures)
@@ -489,9 +531,7 @@ def _evidence(g: BeatGroup, m: BeatMarks, typical_stem: float) -> BeatEvidence:
     )
 
 
-def build_score(lines: list[LineResult], strings: int) -> Score:
-    raw = [m for ln in lines for m in ln.measures]
-    numbers = number_measures(raw)
+def _build_track(raw: list[RawMeasure], numbers: list[int | None], strings: int) -> Score:
     stems = [k.stem_len for m in raw for k in m.marks if k.stem]
     typical = float(np.median(stems)) if stems else 0.0
     measures = []
@@ -516,13 +556,56 @@ def build_score(lines: list[LineResult], strings: int) -> Score:
             ok = solve.apply(beats, evidence, measure.capacity())
             measure.confidence = 1.0 if ok else 0.3
         measures.append(measure)
-    tuning = STANDARD_TUNINGS.get(strings, [])
-    return Score(strings, tuning, None, measures)
+    return Score(strings, STANDARD_TUNINGS.get(strings, []), None, measures)
+
+
+def _shared_numbers(top: list[RawMeasure], top_numbers: list[int], other: list[RawMeasure]):
+    """Numbers for another staff's measures of the same line image: its bar lines are the
+    top staff's, so each measure takes the number of the top-staff measure it overlaps
+    most (None when it overlaps none)."""
+    out: list[int | None] = []
+    for m in other:
+        best, number = 0, None
+        for t, n in zip(top, top_numbers, strict=True):
+            ov = min(m.x1, t.x1) - max(m.x0, t.x0)
+            if ov > best:
+                best, number = ov, n
+        out.append(number)
+    return out
+
+
+def track_name(k: int, count: int) -> str:
+    return "Guitar" if count == 1 else f"Guitar {k + 1}"
+
+
+def build_song(pages: list[list[LineResult]], strings: int) -> Song:
+    """One track per staff position; `pages` holds each line image's staves top to
+    bottom, all with the same number of staves. Measure numbers come from the top staff."""
+    count = len(pages[0]) if pages else 0
+    top = [m for page in pages for m in page[0].measures]
+    top_numbers = number_measures(top)
+    by_page: list[list[int]] = []
+    i = 0
+    for page in pages:
+        by_page.append(top_numbers[i : i + len(page[0].measures)])
+        i += len(page[0].measures)
+    tracks = []
+    for k in range(count):
+        raw, numbers = [], []
+        for page, nums in zip(pages, by_page, strict=True):
+            raw += page[k].measures
+            numbers += nums if k == 0 else _shared_numbers(page[0].measures, nums, page[k].measures)
+        track = _build_track(raw, numbers, strings)
+        track.name = track_name(k, count)
+        tracks.append(track)
+    return Song("", None, tracks)
 
 
 def common_strings(images: list[np.ndarray]) -> int | None:
-    """Most common line count of the best staff per image (the tab's string count)."""
-    counts = Counter(len(st.lines) for img in images if (st := pick_staff(gray_of(img))))
+    """Most common line count of the staves found per image (the tab's string count)."""
+    counts = Counter(
+        len(staves[0].lines) for img in images if (staves := find_staves(gray_of(img)))
+    )
     return counts.most_common(1)[0][0] if counts else None
 
 
@@ -530,29 +613,35 @@ def recognize_lines(
     images: list[np.ndarray],
     clf: GlyphClassifier | None = None,
     progress: Callable[[float], None] | None = None,
-) -> tuple[list[LineResult], int]:
+) -> tuple[list[list[LineResult]], int]:
+    """Per line image, its staves top to bottom; plus the string count."""
     clf = clf or default_classifier()
     strings = common_strings(images)
-    lines = []
+    pages = []
     for i, img in enumerate(images):
-        if r := recognize_line(img, i, clf, strings):
-            lines.append(r)
+        if staves := recognize_line(img, i, clf, strings):
+            pages.append(staves)
         if progress:
             progress((i + 1) / len(images))
-    return consistent_lines(lines)
+    return consistent_lines(pages)
 
 
 def recognize_images(
     images: list[np.ndarray],
     clf: GlyphClassifier | None = None,
     progress: Callable[[float], None] | None = None,
-) -> Score:
+) -> Song:
     """`progress(fraction)` is called after each image."""
-    return build_score(*recognize_lines(images, clf, progress))
+    return build_song(*recognize_lines(images, clf, progress))
 
 
-def consistent_lines(lines: list[LineResult]) -> tuple[list[LineResult], int]:
-    """Keep the lines whose staff has the most common number of strings."""
-    counts = Counter(len(r.staff.lines) for r in lines)
+def consistent_lines(pages: list[list[LineResult]]) -> tuple[list[list[LineResult]], int]:
+    """Keep the line images whose staves have the most common number of strings and
+    whose staff count is the most common one (a line with a staff missed or extra would
+    shift every track below it)."""
+    counts = Counter(len(r.staff.lines) for page in pages for r in page)
     strings = counts.most_common(1)[0][0] if counts else 6
-    return [r for r in lines if len(r.staff.lines) == strings], strings
+    pages = [p for p in pages if all(len(r.staff.lines) == strings for r in p)]
+    sizes = Counter(len(p) for p in pages)
+    size = sizes.most_common(1)[0][0] if sizes else 0
+    return [p for p in pages if len(p) == size], strings

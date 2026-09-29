@@ -1,5 +1,6 @@
 <script setup>
-// Edit panel for one beat: the measure's source image, one fret box per string,
+// Edit panel for one beat of one track (`score` is that track): the measure's source
+// image, one fret box and a tie ("延音") toggle per string,
 // duration / dot / triplet / rest, insert / delete / confirm, and the measure-fill check.
 import { computed, ref, watch } from 'vue'
 import { api } from '../api.js'
@@ -15,6 +16,7 @@ import {
   setFret,
   toggleDot,
   toggleRest,
+  toggleTie,
   toggleTriplet,
 } from '../lib/scoreEdit.js'
 import { measureSource } from '../lib/source.js'
@@ -61,6 +63,8 @@ const strings = computed(() => {
       label: `${props.score.strings - s} 弦 ${midiToName(tuning[s])}`,
       value: note ? (note.dead ? 'x' : String(note.fret)) : '',
       low: note && note.confidence < 0.7,
+      tied: !!note?.tied,
+      canTie: !!note && !note.dead,
     })
   }
   return out
@@ -184,10 +188,20 @@ const fill = computed(() => {
             :class="{ bad: s.string in invalid }"
             @change="onFret(s.string, $event)"
           />
+          <button
+            class="tie"
+            :class="{ on: s.tied }"
+            :disabled="!s.canTie"
+            :data-tie="s.string"
+            title="延音：与前一个同弦的音连起来（不重新拨弦）"
+            @click.prevent="change(toggleTie(score, m, b, s.string))"
+          >
+            延音
+          </button>
         </label>
       </div>
       <p v-if="Object.keys(invalid).length" class="error">品格应为 0–{{ MAX_FRET }}，或 x 表示闷音</p>
-      <p class="hint">留空 = 没有音，x = 闷音</p>
+      <p class="hint">留空 = 没有音，x = 闷音；“延音”= 接着前一个同弦的音，不重新拨弦</p>
 
       <div class="row">
         <button
@@ -221,8 +235,10 @@ const fill = computed(() => {
 .close { padding: 2px 10px; }
 .crop { position: relative; background-repeat: no-repeat; border: 1px solid #ddd; margin-bottom: 8px; }
 .marker { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(37, 99, 235, 0.7); }
-.frets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-bottom: 4px; }
-.frets label { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 13px; }
+.frets { display: grid; grid-template-columns: 1fr; gap: 6px; margin-bottom: 4px; }
+.frets label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.frets label span { flex: 1; }
+.tie { padding: 1px 8px; font-size: 12px; }
 .frets input { width: 44px; text-align: center; }
 .frets .low span { background: rgba(245, 158, 11, 0.35); border-radius: 3px; padding: 0 3px; }
 .bad { border-color: #b91c1c !important; background: #fee2e2; }
