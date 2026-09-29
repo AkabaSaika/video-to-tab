@@ -15,8 +15,8 @@ REACH_GAP = 1.25  # staff spaces: blank rows that end a system's notation above/
 MAX_GAP = 12.0  # staff spaces between the two staves of one system, at most
 CONNECT = 0.9  # share of the gap rows a bar line must cover to join two staves
 RUN = 0.08  # a staff line is a horizontal ink run at least this share of the frame width
-COVER = 0.55  # ... and its row is covered by such runs at least this much, relative to
-# the best covered row nearby (the other lines); beams lying along a line cover less
+COVER = 0.3  # ... and its row is covered by such runs at least this much, relative to
+# the best covered row nearby (the other lines; a beam lying on a line hides part of it)
 MIN_COVER = 0.12  # ... and at least this share of the frame width
 
 
@@ -50,6 +50,12 @@ def find_staves(gray: np.ndarray) -> list[Staff]:
     runs = cv2.morphologyEx(
         _ink(gray), cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1))
     )
+    # beams are long and horizontal too, but thick: drop anything taller than a line
+    t = max(4, round(h / 216))
+    thick = cv2.morphologyEx(
+        runs, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, t))
+    )
+    runs = cv2.subtract(runs, cv2.dilate(thick, np.ones((3, 1), np.uint8)))
     cover = runs.mean(axis=1)
     size = 2 * max(8, h // 25) + 1
     near = cv2.dilate(
@@ -62,33 +68,46 @@ def find_staves(gray: np.ndarray) -> list[Staff]:
     lines = [float(g.mean()) for g in groups]
     strength = [float(cover[g].max()) for g in groups]
 
-    def staff_at(i: int) -> Staff | None:
-        if i + 5 > len(lines):
-            return None
-        gaps = np.diff(lines[i : i + 5])
-        if gaps.min() < 4 or gaps.std() > 0.15 * gaps.mean() + 0.5:
-            return None
-        on = np.mean([runs[g].any(axis=0) for g in groups[i : i + 5]], axis=0) >= 0.6
+    def comb(i: int, j: int) -> list[int] | None:
+        """Lines i, j and three more at the same spacing (stray rows in between skipped)."""
+        idx = [i, j]
+        for _ in range(3):
+            gap = (lines[idx[-1]] - lines[idx[0]]) / (len(idx) - 1)
+            target = lines[idx[-1]] + gap
+            near = min(
+                range(idx[-1] + 1, len(lines)), key=lambda n: abs(lines[n] - target), default=None
+            )
+            if near is None or abs(lines[near] - target) > max(1.5, 0.12 * gap):
+                return None
+            idx.append(near)
+        gaps = np.diff([lines[n] for n in idx])
+        return idx if gaps.std() <= 0.15 * gaps.mean() + 0.5 else None
+
+    candidates = []
+    for i in range(len(lines)):
+        for j in range(i + 1, len(lines)):
+            gap = lines[j] - lines[i]
+            if gap < 4:
+                continue
+            if gap > h / 12:
+                break
+            idx = comb(i, j)
+            if idx is not None:
+                candidates.append((min(strength[n] for n in idx), idx))
+    staves: list[Staff] = []
+    taken: list[tuple[float, float]] = []
+    # strongest first: a staff beats a copy shifted onto a beam or ledger line next to it
+    for _, idx in sorted(candidates, key=lambda c: -c[0]):
+        top, bottom = lines[idx[0]], lines[idx[-1]]
+        if any(top <= b and a <= bottom for a, b in taken):
+            continue
+        on = np.mean([runs[groups[n]].any(axis=0) for n in idx], axis=0) >= 0.6
         cols = np.flatnonzero(on)
         if cols.size < MIN_COVER * w:
-            return None
-        return Staff([int(round(y)) for y in lines[i : i + 5]], int(cols[0]), int(cols[-1]))
-
-    staves = []
-    i = 0
-    while i + 5 <= len(lines):
-        st = staff_at(i)
-        if st is None:
-            i += 1
             continue
-        # a beam or ledger line one space off a staff can make a second, shifted staff:
-        # keep the one with the stronger lines
-        nxt = staff_at(i + 1)
-        if nxt is not None and min(strength[i + 1 : i + 6]) > min(strength[i : i + 5]):
-            st, i = nxt, i + 1
-        staves.append(st)
-        i += 5
-    return staves
+        staves.append(Staff([int(round(lines[n])) for n in idx], int(cols[0]), int(cols[-1])))
+        taken.append((top, bottom))
+    return sorted(staves, key=lambda st: st.lines[0])
 
 
 def _joined(gray: np.ndarray, a: Staff, b: Staff) -> bool:

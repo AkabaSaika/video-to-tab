@@ -59,3 +59,13 @@ def test_lower_staff_left_alone_is_not_paired_with_the_next_system():
 def test_nothing_in_a_frame_without_music():
     assert find_systems(np.full((720, 1280, 3), 255, np.uint8)) == []
     assert find_systems(np.zeros((720, 1280, 3), np.uint8)) == []
+
+
+def test_long_beams_along_the_staff_lines_do_not_hide_a_staff():
+    # like repeated 16ths across a whole system: thick beams hugging a staff's lines
+    img = frame(0).copy()
+    top = 204 + 0  # bass staff of system 0: lines 204..250 in the score
+    for y in (top - 5, top + 4, 250 + 3):
+        img[y : y + 5, 150:900] = 0
+    found = find_systems(img)
+    assert [gt_index(s, 0) for s in found] == [0, 1]
