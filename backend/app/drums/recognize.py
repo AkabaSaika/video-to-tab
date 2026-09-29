@@ -154,6 +154,7 @@ class StaffReading:
     x_start: float  # where the notation starts (after the clef / time signature)
     header_end: float
     time: tuple[int, int] | None
+    header: float | None = None  # end of a clef / time signature, None if there is none
 
 
 def _header_end(noline: np.ndarray, L: list[float], x0: int, s: float) -> float:
@@ -633,7 +634,7 @@ def analyse_staff(ink: np.ndarray, st: Staff, y_lo: int, y_hi: int) -> StaffRead
     for hd in heads:
         if hd not in keep:
             hd.kind = "dropped"
-    return StaffReading(heads, stems, marks, stem_dot, rests, bars, x_start, header_end, time)
+    return StaffReading(heads, stems, marks, stem_dot, rests, bars, x_start, header_end, time, zone)
 
 
 def _is_accent(mask: np.ndarray) -> bool:
@@ -779,6 +780,34 @@ def _note(hd: Head) -> DrumNote:
     step, octave = position(hd.step)
     head = {"x": "circle-x" if hd.circled else "x", "filled": "normal", "hollow": "hollow"}
     return DrumNote(step, octave, head[hd.kind], hd.accent, hd.ghost, hd.open)
+
+
+@dataclass
+class Layout:
+    """Where things are on one staff line: for the capture step."""
+
+    lines: list[int]  # the 5 staff line rows
+    spacing: float
+    x0: int  # staff start / end
+    x1: int
+    bars: list[float]
+    header: float | None  # end of the clef / time signature, None if there is none
+
+
+def layout(img: np.ndarray) -> Layout | None:
+    """The widest staff of an image, its bar lines and its header."""
+    gray = _gray(img)
+    _, ink = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if ink.mean() > 0.5:
+        return None
+    staves = find_lines(gray, ink)
+    if not staves:
+        return None
+    st = max(staves, key=lambda st: st.x1 - st.x0)
+    s = st.spacing
+    y_lo, y_hi = max(0, int(st.lines[0] - 5 * s)), min(ink.shape[0], int(st.lines[-1] + 5 * s))
+    r = analyse_staff(ink, st, y_lo, y_hi)
+    return Layout(list(st.lines), s, st.x0, st.x1, r.bars, r.header)
 
 
 def recognize(img: np.ndarray, time: tuple[int, int] | None = None) -> Page:
