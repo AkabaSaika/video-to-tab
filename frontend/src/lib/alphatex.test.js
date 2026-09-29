@@ -128,3 +128,50 @@ describe('songToTex', () => {
     expect(scoreToTex(score7([measure([beat([note(0, 3)])])]))).toContain('\\track "Guitar"')
   })
 })
+
+describe('techniques', () => {
+  const one = (extra) => body(scoreToTex(score7([measure([beat([note(3, 5, extra)])])])))
+
+  it('writes each technique as a note effect', () => {
+    expect(one({ bend: 1 })).toBe('5.4{b (0 2)}.4') // semitones -> quarter tones
+    expect(one({ bend: 2 })).toBe('5.4{b (0 4)}.4')
+    expect(one({ bend: 3 })).toBe('5.4{b (0 6)}.4')
+    expect(one({ bend: 2, bend_release: true })).toBe('5.4{be (bendRelease 0 0 30 4 60 0)}.4')
+    expect(one({ slide: 'shift' })).toBe('5.4{ss}.4')
+    expect(one({ slide: 'legato' })).toBe('5.4{sl}.4')
+    expect(one({ slide: 'out_down' })).toBe('5.4{sod}.4')
+    expect(one({ slide: 'out_up' })).toBe('5.4{sou}.4')
+    expect(one({ slide_in: 'below' })).toBe('5.4{sib}.4')
+    expect(one({ slide_in: 'above' })).toBe('5.4{sia}.4')
+    expect(one({ hopo: true })).toBe('5.4{h}.4')
+    expect(one({ harmonic: 'natural', harmonic_fret: 5 })).toBe('5.4{nh}.4')
+    expect(one({ harmonic: 'artificial', harmonic_fret: 5 })).toBe('5.4{ah 5}.4')
+    expect(one({ harmonic: 'pinch', harmonic_fret: 12 })).toBe('5.4{ph 12}.4')
+    expect(one({ harmonic: 'tap', harmonic_fret: 12 })).toBe('5.4{th 12}.4')
+    expect(one({ harmonic: 'semi', harmonic_fret: 5 })).toBe('5.4{sh 5}.4')
+    expect(one({ harmonic: 'feedback', harmonic_fret: 12 })).toBe('5.4{fh 12}.4')
+    expect(one({ harmonic: 'artificial' })).toBe('5.4{ah 12}.4') // no fret: an octave up
+    expect(one({ vibrato: true })).toBe('5.4{v}.4')
+    expect(one({ palm_mute: true })).toBe('5.4{pm}.4')
+    expect(one({ staccato: true })).toBe('5.4{st}.4')
+  })
+
+  it('combines effects with a tie and leaves plain notes bare', () => {
+    expect(one({ tied: true, palm_mute: true, staccato: true })).toBe('5.4{t pm st}.4')
+    expect(one({ bend: null, slide: null, hopo: false, vibrato: false })).toBe('5.4.4')
+    expect(one({ bend: 0 })).toBe('5.4.4')
+  })
+
+  it('keeps techniques on dead notes and on every note of a chord', () => {
+    const tex = body(
+      scoreToTex(
+        score7([
+          measure([
+            beat([note(0, 0, { dead: true, palm_mute: true }), note(1, 7, { palm_mute: true })]),
+          ]),
+        ]),
+      ),
+    )
+    expect(tex).toBe('(x.7{pm} 7.6{pm}).4')
+  })
+})

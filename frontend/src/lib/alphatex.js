@@ -18,6 +18,29 @@ export function scoreTuning(score) {
   return t.length === score.strings ? t : defaultTuning(score.strings)
 }
 
+const SLIDE_OUT = { shift: 'ss', legato: 'sl', out_down: 'sod', out_up: 'sou' }
+const SLIDE_IN = { below: 'sib', above: 'sia' }
+const HARMONIC = { artificial: 'ah', pinch: 'ph', tap: 'th', semi: 'sh', feedback: 'fh' }
+
+// Note effects of a note's playing techniques (see Note in backend app/omr/model.py).
+// Bends are stored in semitones; alphaTex bend values are quarter tones.
+export function techniqueEffects(n) {
+  const out = []
+  const quarters = Math.round((n.bend || 0) * 2)
+  if (quarters > 0) {
+    out.push(n.bend_release ? `be (bendRelease 0 0 30 ${quarters} 60 0)` : `b (0 ${quarters})`)
+  }
+  if (n.harmonic === 'natural') out.push('nh')
+  else if (HARMONIC[n.harmonic]) out.push(`${HARMONIC[n.harmonic]} ${n.harmonic_fret ?? 12}`)
+  if (n.vibrato) out.push('v')
+  if (SLIDE_IN[n.slide_in]) out.push(SLIDE_IN[n.slide_in])
+  if (SLIDE_OUT[n.slide]) out.push(SLIDE_OUT[n.slide])
+  if (n.hopo) out.push('h')
+  if (n.palm_mute) out.push('pm')
+  if (n.staccato) out.push('st')
+  return out
+}
+
 function beatTex(score, beat) {
   if (!DURATIONS.includes(beat.duration)) throw new Error(`不支持的时值：${beat.duration}`)
   let body
@@ -25,9 +48,10 @@ function beatTex(score, beat) {
   else {
     const notes = beat.notes.map((n) => {
       if (!(n.string >= 0 && n.string < score.strings)) throw new Error(`弦号超出范围：${n.string}`)
-      // {t}: tied to the previous note on this string (alphaTab's isTieDestination)
-      const tie = n.tied && !n.dead ? '{t}' : ''
-      return `${n.dead ? 'x' : n.fret}.${texString(score.strings, n.string)}${tie}`
+      // t: tied to the previous note on this string (alphaTab's isTieDestination)
+      const effects = [...(n.tied && !n.dead ? ['t'] : []), ...techniqueEffects(n)]
+      const fx = effects.length ? `{${effects.join(' ')}}` : ''
+      return `${n.dead ? 'x' : n.fret}.${texString(score.strings, n.string)}${fx}`
     })
     body = notes.length === 1 ? notes[0] : `(${notes.join(' ')})`
   }
