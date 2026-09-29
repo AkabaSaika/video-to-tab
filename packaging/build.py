@@ -53,6 +53,8 @@ def main() -> None:
             str(OUT),
             "--add-data",
             f"{FRONTEND_DIST}{os.pathsep}frontend/dist",
+            "--add-data",  # the glyph classifier; the training fonts are not needed at runtime
+            f"{BACKEND / 'app' / 'omr' / 'models'}{os.pathsep}app/omr/models",
             "--collect-submodules",
             "uvicorn",
             "--collect-submodules",
