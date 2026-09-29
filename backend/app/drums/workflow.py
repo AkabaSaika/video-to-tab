@@ -67,6 +67,7 @@ def render_page(job: DrumJob, entry: dict) -> None:
     name = f"pages/{entry['id']:03d}.musicxml"
     write_atomic(job.dir / name, musicxml(score, mapping_of(job)))
     entry["musicxml"] = name
+    entry["rev"] = entry.get("rev", 0) + 1  # the preview changed: clients fetch it again
 
 
 def recognize_page(store: DrumStore, job: DrumJob, pid: int, variant: int | None = None) -> dict:
@@ -168,6 +169,7 @@ def run(store: DrumStore, job: DrumJob, url: str | None = None) -> None:
                 "start": round(page.start, 2),
                 "end": round(page.end, 2),
                 "attempts": 0,
+                "rev": 0,
                 "measures": len(page.measures) or None,
                 "summed": None,
                 "time": None,

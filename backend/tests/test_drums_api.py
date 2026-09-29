@@ -122,6 +122,9 @@ def test_mapping_changes_the_exports_without_recognizing_again(client, ready, tm
     body = r.json()
     assert body["mapping"]["used"][0]["gm"] > 0
     assert all(p["attempts"] == 1 for p in body["job"]["pages"])  # no new recognition
+    # the previews are new: their revision tells the page to fetch them again
+    revs = {p["id"]: p["rev"] for p in ready["pages"]}
+    assert all(p["rev"] > revs[p["id"]] for p in body["job"]["pages"])
     assert (tmp_path / "drums" / jid / "pages" / "000.musicxml").read_text() != page_xml
 
     xml = client.get(f"/api/drums/jobs/{jid}/musicxml").content.decode()
