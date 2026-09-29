@@ -7,6 +7,7 @@ at any resolution and to any tab software.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import cv2
@@ -526,16 +527,28 @@ def common_strings(images: list[np.ndarray]) -> int | None:
 
 
 def recognize_lines(
-    images: list[np.ndarray], clf: GlyphClassifier | None = None
+    images: list[np.ndarray],
+    clf: GlyphClassifier | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> tuple[list[LineResult], int]:
     clf = clf or default_classifier()
     strings = common_strings(images)
-    lines = [r for i, img in enumerate(images) if (r := recognize_line(img, i, clf, strings))]
+    lines = []
+    for i, img in enumerate(images):
+        if r := recognize_line(img, i, clf, strings):
+            lines.append(r)
+        if progress:
+            progress((i + 1) / len(images))
     return consistent_lines(lines)
 
 
-def recognize_images(images: list[np.ndarray], clf: GlyphClassifier | None = None) -> Score:
-    return build_score(*recognize_lines(images, clf))
+def recognize_images(
+    images: list[np.ndarray],
+    clf: GlyphClassifier | None = None,
+    progress: Callable[[float], None] | None = None,
+) -> Score:
+    """`progress(fraction)` is called after each image."""
+    return build_score(*recognize_lines(images, clf, progress))
 
 
 def consistent_lines(lines: list[LineResult]) -> tuple[list[LineResult], int]:

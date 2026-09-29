@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -38,3 +39,81 @@ def test_unknown_track_name_is_a_clear_error(tmp_path):
         )
     with pytest.raises(ValueError, match="Lead"):
         read_track(gp, "Bass")
+
+
+def test_score_title_round_trips_and_defaults():
+    assert Score.from_dict({}).title == ""
+    assert Score.from_dict({}) == Score()
+    score = Score(6, [40, 45, 50, 55, 59, 64], None, [], "My Song")
+    assert Score.from_dict(score.to_dict()) == score
+
+
+def test_from_dict_fills_missing_fields_with_defaults():
+    score = Score.from_dict({"measures": [{"beats": [{"notes": [{"string": 2, "fret": 5}]}]}]})
+    beat = score.measures[0].beats[0]
+    assert beat.duration == 4 and beat.confidence == 1.0 and not beat.rest
+    assert beat.notes == [Note(2, 5)]
+    assert score.measures[0].time == (4, 4)
+
+
+@pytest.mark.parametrize(
+    ("data", "where"),
+    [
+        ([], "乐谱"),
+        ({"strings": "7"}, "strings"),
+        ({"strings": True}, "strings"),
+        ({"tuning": [40, "A"]}, "tuning"),
+        ({"title": 3}, "title"),
+        ({"measures": {}}, "measures"),
+        ({"measures": [{"time": [4]}]}, "measures[0].time"),
+        ({"measures": [{"beats": [{"duration": 4.5}]}]}, "measures[0].beats[0].duration"),
+        ({"measures": [{"beats": [{"rest": 1}]}]}, "measures[0].beats[0].rest"),
+        ({"measures": [{"beats": [{"notes": [{"fret": None}]}]}]}, "notes[0].fret"),
+        ({"measures": [{"beats": [{"notes": [{"confidence": "x"}]}]}]}, "confidence"),
+    ],
+)
+def test_from_dict_rejects_wrong_types(data, where):
+    with pytest.raises(ValueError, match=re.escape(where)):
+        Score.from_dict(data)
+
+
+def _numbered(*numbers):
+    return Score(
+        7, [], None, [Measure(n, (4, 4), [Beat(4, notes=[Note(0, n)])], line=0) for n in numbers]
+    )
+
+
+def test_pad_numbers_adds_unflagged_leading_rests():
+    from app.omr.model import pad_numbers
+
+    score = _numbered(3, 4)
+    padded = pad_numbers(score)
+    assert [m.number for m in padded.measures] == [1, 2, 3, 4]
+    for m in padded.measures[:2]:
+        assert m.line == -1 and m.confidence == 1.0
+        assert [(b.duration, b.rest, b.notes) for b in m.beats] == [(1, True, [])]
+    assert padded.measures[2:] == score.measures
+    assert [m.number for m in score.measures] == [3, 4]  # input untouched
+
+
+def test_pad_numbers_fills_gaps_with_flagged_rests():
+    from app.omr.model import pad_numbers
+
+    padded = pad_numbers(_numbered(1, 2, 5))
+    assert [m.number for m in padded.measures] == [1, 2, 3, 4, 5]
+    assert [(m.line, m.confidence) for m in padded.measures[2:4]] == [(-1, 0.0), (-1, 0.0)]
+    assert padded.measures[4].beats[0].notes == [Note(0, 5)]
+
+
+def test_pad_numbers_leaves_non_increasing_numbers_alone():
+    from app.omr.model import pad_numbers
+
+    for numbers in [(3, 3, 4), (5, 4), (2, None, 4), (0, 1)]:
+        score = _numbered(*numbers)
+        assert pad_numbers(score) == score
+
+
+def test_pad_numbers_on_empty_score():
+    from app.omr.model import pad_numbers
+
+    assert pad_numbers(Score()) == Score()
