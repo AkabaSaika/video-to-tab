@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from app.omr import solve
+from app.omr import solve, techniques
 from app.omr.glyphs import (
     DIGITS,
     Blob,
@@ -59,6 +59,7 @@ class Fret:
     circled: bool = False
     dead: bool = False
     tied: bool = False  # in parentheses: continues the previous note on this string
+    tech: dict = field(default_factory=dict)  # playing techniques, as Note fields
 
 
 @dataclass
@@ -454,6 +455,7 @@ class BeatGroup:
     frets: list[Fret]
     rest: RestMark | None = None
     hidden: bool = False  # a stem without a number: tied continuation of the previous beat
+    marks: dict = field(default_factory=dict)  # beat-level techniques (palm_mute, staccato)
 
 
 def group_beats(frets: list[Fret], rests: list[RestMark], s: float) -> list[BeatGroup]:
@@ -543,9 +545,11 @@ def recognize_staff(
     line: int = 0,
     clf: GlyphClassifier | None = None,
     numbers: bool = True,
+    top_limit: int = 0,
 ) -> LineResult:
     """One tab staff of a line image. Measure numbers are read above the staff only when
-    `numbers` is set (Guitar Pro prints them above the top staff of a system)."""
+    `numbers` is set (Guitar Pro prints them above the top staff of a system). Marks
+    above the staff are looked for below row `top_limit` (the staff above's rhythm)."""
     clf = clf or default_classifier()
     s = staff.spacing
     extents = bar_extents(gray, staff)
@@ -553,6 +557,8 @@ def recognize_staff(
     ink = staff_ink(gray, s, staff.lines)
     glyphs, circles, arcs = staff_glyphs(ink, staff, extents, clf)
     frets = frets_from_glyphs(glyphs, circles, staff, arcs)
+    typical = float(np.median([f.h for f in frets])) if frets else 0.75 * s
+    frets = techniques.harmonics(glyphs, frets, staff, typical)
     rests = rests_from_glyphs(glyphs, frets, staff)
     raw_ink = (gray < INK_LEVEL).astype(np.uint8)
 
@@ -582,7 +588,29 @@ def recognize_staff(
         if numbers and x0 in bars:
             num, conf = read_measure_number(gray, staff, x0, clf)
         measures.append(RawMeasure(line, int(x0), int(x1), groups, marks, num, conf))
+    boxes = [
+        (f.x - f.w / 2 - 1, f.x + f.w / 2 + 1, f.y - f.h / 2 - 1, f.y + f.h / 2 + 1) for f in frets
+    ]
+    used = {
+        id(g)
+        for g in glyphs
+        if any(a <= g.blob.cx <= b and c <= g.blob.cy <= d for a, b, c, d in boxes)
+    }
+    tech = techniques.annotate(
+        ink,
+        gray,
+        staff,
+        frets,
+        [g for m in measures for g in m.groups],
+        glyphs,
+        used,
+        arcs,
+        extents,
+        top_limit,
+        clf,
+    )
     debug = {"glyphs": glyphs, "circles": circles, "arcs": arcs, "frets": frets, "rests": rests}
+    debug["techniques"] = tech
     return LineResult(staff, bars, measures, debug)
 
 
@@ -596,7 +624,12 @@ def recognize_line(
     clf = clf or default_classifier()
     gray = gray_of(img)
     staves = find_staves(gray, strings)
-    return [recognize_staff(gray, st, line, clf, numbers=k == 0) for k, st in enumerate(staves)]
+    out = []
+    for k, st in enumerate(staves):
+        # the staff above's stems, beams and tuplet numbers reach about 4.6 s below it
+        limit = int(staves[k - 1].lines[-1] + 4.6 * staves[k - 1].spacing) if k else 0
+        out.append(recognize_staff(gray, st, line, clf, numbers=k == 0, top_limit=limit))
+    return out
 
 
 NUMBER_JUMP = 2.5  # cost of a numbering discontinuity (missing or repeated measures)
@@ -660,13 +693,16 @@ def _build_track(raw: list[RawMeasure], numbers: list[int | None], strings: int)
         beats, evidence = [], []
         for g, mk in zip(m.groups, m.marks, strict=True):
             notes = [
-                Note(f.string, f.fret, round(f.conf, 3), f.dead, f.tied)
+                Note(f.string, f.fret, round(f.conf, 3), f.dead, f.tied, **f.tech)
                 for f in sorted(g.frets, key=lambda f: f.string)
             ]
             if g.hidden:  # a stem without numbers: the notes before it, held (tied)
                 notes = [
                     Note(n.string, n.fret, HIDDEN_TIE_CONF, n.dead, not n.dead) for n in previous
                 ]
+            for n in notes:  # beat-level marks belong to every note of the beat
+                for name, on in g.marks.items():
+                    setattr(n, name, on)
             if notes:
                 previous = notes
             beats.append(Beat(4, 0, None, g.rest is not None or not notes, notes, int(g.x)))
