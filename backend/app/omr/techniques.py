@@ -31,7 +31,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from app.omr.glyphs import DIGITS, Blob, components
+from app.omr.glyphs import DIGITS, Blob, components, union
 
 # ---------------------------------------------------------------- shapes
 
@@ -90,11 +90,12 @@ def letter_kind(b: Blob) -> str | None:
         return None
     side = max(1, int(round(0.3 * w)))
     sides = m[:, :side].any(axis=1).mean() >= 0.85 and m[:, w - side :].any(axis=1).mean() >= 0.85
-    mid = m[:, int(0.35 * w) : max(int(0.35 * w) + 1, int(0.65 * w))]
+    # the centre columns hold only the crossbar (serifs stop short of the centre)
+    mid = m[:, max(0, w // 2 - 1) : w // 2 + 1]
     rows = np.flatnonzero(mid.any(axis=1))
     if not sides or rows.size == 0:
         return None
-    crossbar = rows[0] >= 0.2 * h and rows[-1] <= 0.8 * h and rows[-1] - rows[0] <= 0.4 * h
+    crossbar = rows[0] >= 0.25 * h and rows[-1] <= 0.75 * h and rows[-1] - rows[0] <= 0.35 * h
     return "H" if crossbar else None
 
 
@@ -375,20 +376,34 @@ def _pair_around(by_string, x: float, s: float, top_first: bool = True):
     best = None
     for string, fs in by_string.items():
         for a, b in zip(fs, fs[1:], strict=False):
-            if a.x < x < b.x and b.x - a.x <= 5 * s:
+            if a.x < x < b.x and b.x - a.x <= 12 * s:
                 key = (b.x - a.x, -string if top_first else string)
                 if best is None or key < best[0]:
                     best = (key, a, b)
     return (best[1], best[2]) if best else None
 
 
+def _one_letter(r: Run, s: float) -> Blob | None:
+    """The run as a single letter: one blob, or pieces of one (cut by a faint seam of
+    the stitched image) that touch and share their top and bottom."""
+    bl = sorted(r.blobs, key=lambda b: b.x)
+    if len(bl) > 3:
+        return None
+    for a, b in zip(bl, bl[1:], strict=False):
+        if b.x - (a.x + a.w) > max(1, 0.1 * s) or abs(a.y - b.y) > 1 or abs(a.h - b.h) > 2:
+            return None
+    u = union(bl)
+    return u if is_letter(u, s) else None
+
+
 def hopo_letters(runs, frets, s) -> list[tuple[str, object]]:
     by_string = _string_frets(frets)
     out = []
     for r in runs:
-        if len(r.blobs) != 1 or not is_letter(r.blobs[0], s):
+        letter = _one_letter(r, s)
+        if letter is None:
             continue
-        kind = letter_kind(r.blobs[0])
+        kind = letter_kind(letter)
         if kind is None:
             continue
         pair = _pair_around(by_string, r.cx, s)
@@ -463,9 +478,9 @@ def bends(ink, staff, frets, bars, runs, s, digit_of) -> list:
     out = []
     for c in components(joined, min_area=8):
         c.y += y0
-        if c.h < 1.0 * s or c.y > top - 0.3 * s or c.y + c.h < top + 0.2 * s:
-            continue  # must reach from inside the staff to above it
-        if c.mask.mean() > 0.45 or c.w > 3.0 * s:
+        if c.h < 1.0 * s or c.y > top - 0.3 * s or c.y + c.h < top - 0.5 * s:
+            continue  # must rise from a string (the top one too) to above the staff
+        if c.mask.mean() > 0.45 or c.w > 4.0 * s:
             continue
         ys, xs = np.nonzero(c.mask)
         low = ys.max()
@@ -474,7 +489,7 @@ def bends(ink, staff, frets, bars, runs, s, digit_of) -> list:
         cand = [
             f
             for f in frets
-            if -0.3 * s <= bx - (f.x + f.w / 2) <= 2.2 * s and f.y - 1.1 * s <= by <= f.y + 0.3 * s
+            if -0.3 * s <= bx - (f.x + f.w / 2) <= 3.0 * s and f.y - 1.1 * s <= by <= f.y + 0.6 * s
         ]
         if not cand:
             continue
@@ -491,9 +506,10 @@ def bends(ink, staff, frets, bars, runs, s, digit_of) -> list:
         ]
         label = min(labels, key=lambda r: abs(r.cx - tip_x), default=None)
         f.tech["bend"] = bend_amount(label, s, digit_of)
-        # a release goes back down right of the peak
-        right = xs >= 0.75 * (c.w - 1)
-        if right.any() and ys[right].max() >= 0.6 * c.h:
+        # a release goes back down right of the peak; a plain bend's arrow comes up from
+        # the left and ends at its tip
+        after = xs + c.x > tip_x + 0.35 * s
+        if after.any() and ys[after].max() + c.y >= tip_y + 0.4 * c.h:
             f.tech["bend_release"] = True
         out.append((f, c, label))
     return out
