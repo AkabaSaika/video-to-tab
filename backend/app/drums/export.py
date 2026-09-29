@@ -21,6 +21,7 @@ PPQ = 480
 TYPES = {1: "whole", 2: "half", 4: "quarter", 8: "eighth", 16: "16th", 32: "32nd", 64: "64th"}
 VELOCITY = {"normal": 96, "accent": 120, "ghost": 40}
 GATE = Fraction(1, 16)  # drums are one-shots: a short note-off keeps MIDI files tidy
+OPEN_HIHAT = 46  # written as a cross with an "o" above
 
 
 @dataclass
@@ -146,8 +147,6 @@ def _note_xml(
         gm = mapping.resolve(note)
         inst = f'<instrument id="P1-I{gm}"/>'
         shape = INSTRUMENTS[gm].head if gm in INSTRUMENTS else "normal"
-        if note.notehead in ("x", "circle-x"):
-            shape = note.notehead if shape != "normal" else shape
         par = ' parentheses="yes"' if note.ghost else ""
         if shape != "normal" or par:
             head = f"<notehead{par}>{shape}</notehead>"
@@ -163,7 +162,7 @@ def _note_xml(
         xml += f"<stem>{'up' if voice == 1 else 'down'}</stem>"
     xml += head + extra
     notations = ""
-    if note is not None and note.open:
+    if note is not None and (note.open or mapping.resolve(note) == OPEN_HIHAT):
         notations += "<technical><open-string/></technical>"
     if note is not None and note.accent:
         notations += "<articulations><accent/></articulations>"

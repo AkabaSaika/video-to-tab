@@ -151,3 +151,22 @@ def test_overlapping_or_overlong_beats_are_made_writable():
     assert all(a.start + a.length <= b.start for a, b in zip(placed, placed[1:], strict=False))
     assert placed[-1].start + placed[-1].length <= 1
     assert placed[0].duration == 4
+
+
+def test_noteheads_follow_the_instrument():
+    """A Guitar Pro circled cross on the hi-hat line is an open hi-hat: written as a
+    cross with an "o" (what Verovio and MuseScore draw); a remapped position gets the
+    new drum's notehead."""
+    beats = [
+        Beat(F(0), 4, notes=[DrumNote("G", 5, "circle-x")]),
+        Beat(F(1, 4), 4, notes=[DrumNote("C", 5)]),
+        Beat(F(1, 2), 4, notes=[DrumNote("F", 5, "x")]),
+    ]
+    s = DrumScore("", 120, (4, 4), [DrumMeasure([beats])])
+    notes = ET.fromstring(musicxml(s).split("\n", 2)[2]).findall(".//note")
+    heads = [n.findtext("notehead") for n in notes]
+    assert heads == ["x", None, "x"]
+    assert notes[0].find("notations/technical/open-string") is not None
+    moved = Mapping("default", {"C5:normal": 42, "F5:x": 53})
+    notes = ET.fromstring(musicxml(s, moved).split("\n", 2)[2]).findall(".//note")
+    assert [n.findtext("notehead") for n in notes] == ["x", "x", "diamond"]

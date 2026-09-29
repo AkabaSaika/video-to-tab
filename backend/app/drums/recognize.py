@@ -578,6 +578,7 @@ def analyse_staff(ink: np.ndarray, st: Staff, y_lo: int, y_hi: int) -> StaffRead
             x_start = min(x_start, min(sm.x for sm in stems) - 1.5 * s)
     rests: list[Rest] = []
     dots: list[tuple[float, float]] = []
+    _, own, own_st, _ = cv2.connectedComponentsWithStats(noline.astype(np.uint8), connectivity=8)
     for (x, y, w, h, a), c, m in _comps(rest_src, 3):
         ws, hs = w / s, h / s
         fill = a / max(1, w * h)
@@ -585,7 +586,11 @@ def analyse_staff(ink: np.ndarray, st: Staff, y_lo: int, y_hi: int) -> StaffRead
         if cx < x_start:
             continue
         if ws <= 0.55 and hs <= 0.55 and fill > 0.5:
-            dots.append((cx, cy))
+            # a dot is a small round blob on its own, not a piece cut off something
+            k = own[int(round(cy)), int(round(cx))] if own[int(round(cy)), int(round(cx))] else 0
+            alone = k > 0 and max(own_st[k][2], own_st[k][3]) <= 0.6 * s
+            if alone and 0.6 <= w / max(h, 1) <= 1.7 and min(ws, hs) >= 0.15:
+                dots.append((cx, cy))
             continue
         if 0.3 <= ws <= 1.0 and 0.3 <= hs <= 1.0 and y + h < L[0] - 0.5 * s and fill < 0.75:
             rings.append((cx, cy))  # an "o" above the staff (open hi-hat)

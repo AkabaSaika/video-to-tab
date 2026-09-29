@@ -21,7 +21,7 @@ class Instrument:
     gm: int  # General MIDI percussion key (channel 10)
     name: str  # English name (MusicXML)
     label: str  # Chinese name (UI)
-    head: str  # notehead family it is usually written with
+    head: str  # the MusicXML notehead it is written with
 
 
 INSTRUMENTS: dict[int, Instrument] = {
@@ -38,14 +38,14 @@ INSTRUMENTS: dict[int, Instrument] = {
         Instrument(43, "High Floor Tom", "落地嗵鼓", "normal"),
         Instrument(44, "Pedal Hi-Hat", "踩镲踏板", "x"),
         Instrument(45, "Low Tom", "低嗵鼓", "normal"),
-        Instrument(46, "Open Hi-Hat", "开镲", "circle-x"),
+        Instrument(46, "Open Hi-Hat", "开镲", "x"),  # with an "o" above
         Instrument(47, "Low-Mid Tom", "中嗵鼓", "normal"),
         Instrument(48, "Hi-Mid Tom", "中高嗵鼓", "normal"),
         Instrument(49, "Crash Cymbal 1", "吊镲", "x"),
         Instrument(50, "High Tom", "高嗵鼓", "normal"),
         Instrument(51, "Ride Cymbal 1", "叮叮镲", "x"),
         Instrument(52, "Chinese Cymbal", "中国镲", "x"),
-        Instrument(53, "Ride Bell", "叮叮镲镲帽", "circle-x"),
+        Instrument(53, "Ride Bell", "叮叮镲镲帽", "diamond"),
         Instrument(54, "Tambourine", "铃鼓", "x"),
         Instrument(55, "Splash Cymbal", "水镲", "x"),
         Instrument(56, "Cowbell", "牛铃", "x"),
