@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
 import cv2
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +16,7 @@ from app import workflow
 from app.frames import DecodeError, frame_at
 from app.jobs import Job, JobStore, Status
 from app.models import Roi
+from app.omr.model import Score
 from app.pipeline import AnalyzeParams
 from app.source import VIDEO_EXTS, SourceError, normalize_url, save_upload
 
@@ -34,6 +36,10 @@ class RegionIn(BaseModel):
     fps: float = Field(default=5.0, gt=0, le=60)
     diff_threshold: float = Field(default=0.15, gt=0, lt=1)
     min_duration: float = Field(default=0.8, ge=0)
+
+
+class RecognizeIn(BaseModel):
+    order: list[int]
 
 
 class ExportIn(BaseModel):
@@ -75,11 +81,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             job = store.create()
             if file is not None:
                 path = save_upload(file.file, file.filename or "", job.dir)
-                store.update(job, video=path.name)
+                store.update(job, video=path.name, source=file.filename or "")
+            else:
+                store.update(job, source=clean_url)
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from exc
         store.run(job, lambda: workflow.prepare(store, job, clean_url))
         return job.to_dict()
+
+    @app.get("/api/jobs")
+    def list_jobs() -> list[dict]:
+        return [job.summary() for job in store.recent()]
 
     @app.get("/api/jobs/{job_id}")
     def read_job(job_id: str) -> dict:
@@ -92,11 +104,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(409, "视频尚未就绪")
         roi = Roi(body.x, body.y, body.w, body.h)
         params = AnalyzeParams(body.fps, body.diff_threshold, body.min_duration)
-        allowed = (Status.READY_FOR_REGION, Status.READY_FOR_REVIEW, Status.FAILED)
+        allowed = (
+            Status.READY_FOR_REGION,
+            Status.READY_FOR_REVIEW,
+            Status.READY_FOR_SCORE,
+            Status.FAILED,
+        )
         if not store.transition(job, allowed, status=Status.ANALYZING, error=None):
             raise HTTPException(409, f"当前状态不能开始分析：{job.status}")
         store.run(job, lambda: workflow.run_analysis(store, job, roi, params))
         return job.to_dict()
+
+    @app.post("/api/jobs/{job_id}/recognize")
+    def recognize(job_id: str, body: RecognizeIn) -> dict:
+        job = get_job(job_id)
+        known = {p["id"] for p in job.pages}
+        if not body.order:
+            raise HTTPException(400, "没有选中任何页面")
+        if not set(body.order) <= known:
+            raise HTTPException(400, "页面不存在，请刷新后重试")
+        allowed = (Status.READY_FOR_REVIEW, Status.READY_FOR_SCORE, Status.FAILED)
+        changes = {"status": Status.RECOGNIZING, "stage": "recognize", "progress": 0.0}
+        if not store.transition(job, allowed, **changes, error=None):
+            raise HTTPException(409, f"当前状态不能开始识谱：{job.status}")
+        store.run(job, lambda: workflow.recognize(store, job, body.order))
+        return job.to_dict()
+
+    @app.get("/api/jobs/{job_id}/score")
+    def read_score(job_id: str) -> dict:
+        job = get_job(job_id)
+        path = job.dir / "score.json"
+        if not path.is_file():
+            raise HTTPException(404, "还没有识谱结果")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @app.put("/api/jobs/{job_id}/score")
+    def write_score(job_id: str, body: Annotated[Any, Body()]) -> dict:
+        job = get_job(job_id)
+        if job.status == Status.RECOGNIZING:
+            raise HTTPException(409, "正在识谱，请稍后再保存")
+        if not (job.dir / "score.json").is_file():
+            raise HTTPException(404, "还没有识谱结果")
+        try:
+            score = Score.from_dict(body)
+        except ValueError as exc:
+            raise HTTPException(422, f"乐谱数据不合法：{exc}") from exc
+        workflow.save_score(job, score)
+        if score.title != job.title:
+            store.update(job, title=score.title)
+        return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/export")
     def export(job_id: str, body: ExportIn) -> dict:
