@@ -38,6 +38,11 @@ override-dependencies = [
 testpaths = ["tests"]
 markers = ["network: needs internet access (deselect with -m 'not network')"]
 addopts = "-m 'not network'"
+filterwarnings = [
+  # homr's musicxml dependency: noisy but harmless
+  "ignore:invalid escape sequence:SyntaxWarning",
+  "ignore::DeprecationWarning:musicxml.*",
+]
 
 [tool.ruff]
 line-length = 100
